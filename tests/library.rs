@@ -22,8 +22,6 @@ fn ensure_loaded() -> Option<String> {
 }
 
 #[test]
-#[cfg_attr(all(miri, windows), ignore = "SetThreadErrorMode is unsupported under Miri on Windows")]
-#[cfg_attr(all(miri, not(windows)), ignore = "dlopen is unsupported under Miri")]
 fn load_from_explicit_path_ok() {
     let _g = LIB_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let Some(path) = ensure_loaded() else {
@@ -35,8 +33,6 @@ fn load_from_explicit_path_ok() {
 }
 
 #[test]
-#[cfg_attr(all(miri, windows), ignore = "SetThreadErrorMode is unsupported under Miri on Windows")]
-#[cfg_attr(all(miri, not(windows)), ignore = "dlopen is unsupported under Miri")]
 fn load_auto_discovery_ok() {
     let _g = LIB_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let Some(_) = ensure_loaded() else {
@@ -48,8 +44,6 @@ fn load_auto_discovery_ok() {
 }
 
 #[test]
-#[cfg_attr(all(miri, windows), ignore = "SetThreadErrorMode is unsupported under Miri on Windows")]
-#[cfg_attr(all(miri, not(windows)), ignore = "dlopen is unsupported under Miri")]
 fn load_conflicting_path_errors() {
     let _g = LIB_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let Some(_) = ensure_loaded() else {
@@ -72,8 +66,6 @@ fn load_conflicting_path_errors() {
 }
 
 #[test]
-#[cfg_attr(all(miri, windows), ignore = "SetThreadErrorMode is unsupported under Miri on Windows")]
-#[cfg_attr(all(miri, not(windows)), ignore = "dlopen is unsupported under Miri")]
 fn load_missing_path_errors() {
     let _g = LIB_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _ = ensure_loaded();

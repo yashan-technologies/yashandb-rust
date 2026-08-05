@@ -15,6 +15,22 @@ pub struct EnvHandle(NonNull<c_void>);
 #[repr(transparent)]
 pub struct DbcHandle(NonNull<c_void>);
 
+impl EnvHandle {
+    /// Raw pointer to the underlying C handle.
+    #[inline]
+    pub fn as_ptr(&self) -> *mut c_void {
+        self.0.as_ptr()
+    }
+}
+
+impl DbcHandle {
+    /// Raw pointer to the underlying C handle.
+    #[inline]
+    pub fn as_ptr(&self) -> *mut c_void {
+        self.0.as_ptr()
+    }
+}
+
 impl YacLib {
     // Handles below take `&mut` even when only read: the `&mut` borrow guarantees
     // exclusive access, so the same C handle is never touched concurrently from
@@ -62,9 +78,6 @@ impl YacLib {
     /// Establish a connection to the YashanDB instance.
     #[inline]
     pub fn connect(&self, dbc: &mut DbcHandle, url: &str, username: &str, password: &str) -> Result<(), Error> {
-        // TODO(attr): the C driver defaults to GBK; UTF-8 bytes passed here will
-        // be garbled for non-ASCII input. Set `YacEnvAttr::CharsetCode` (or
-        // convert to GBK) before connecting once the attribute API lands.
         let url_len = conn_param_len(url)?;
         let username_len = conn_param_len(username)?;
         let password_len = conn_param_len(password)?;

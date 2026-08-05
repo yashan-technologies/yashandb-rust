@@ -39,17 +39,46 @@ pub enum YacHandleType {
 #[repr(i32)]
 pub enum YacEnvAttr {
     CharsetCode = 62,
+    ReturnSuccessWithInfo = 64,
     SoftwareVersion = 65,
+    ClientDriver = 66,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(i32)]
 pub enum YacConnAttr {
-    Autocommit = 3,
+    AutoCommit = 3,
     LoginTimeout = 4,
     PacketSize = 6,
     TransactionIsolation = 7,
+    Credt = 11,
+    MaxCharsetRatio = 12,
+    TafEnabled = 14,
+    TafCallback = 15,
+    MaxNcharsetRatio = 17,
     HeartbeatEnabled = 18,
+}
+
+/// Client character set code (`YacCharsetCode`).
+#[allow(clippy::upper_case_acronyms)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(i32)]
+pub enum YacCharsetCode {
+    ASCII = 0,
+    GBK = 1,
+    UTF8 = 2,
+    ISO88591 = 3,
+    UTF16 = 4,
+    GB18030 = 5,
+}
+
+/// Connection transaction isolation level (`YacTxnIsolation`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(i32)]
+pub enum YacTxnIsolation {
+    ReadCommitted = 0,
+    CurrCommitted = 1,
+    Serializable = 2,
 }
 
 // --- C structs ---
@@ -133,15 +162,39 @@ mod tests {
     #[test]
     fn env_attr_repr() {
         assert_eq!(YacEnvAttr::CharsetCode as i32, 62);
+        assert_eq!(YacEnvAttr::ReturnSuccessWithInfo as i32, 64);
         assert_eq!(YacEnvAttr::SoftwareVersion as i32, 65);
+        assert_eq!(YacEnvAttr::ClientDriver as i32, 66);
     }
 
     #[test]
     fn conn_attr_repr() {
-        assert_eq!(YacConnAttr::Autocommit as i32, 3);
+        assert_eq!(YacConnAttr::AutoCommit as i32, 3);
         assert_eq!(YacConnAttr::LoginTimeout as i32, 4);
         assert_eq!(YacConnAttr::PacketSize as i32, 6);
         assert_eq!(YacConnAttr::TransactionIsolation as i32, 7);
+        assert_eq!(YacConnAttr::Credt as i32, 11);
+        assert_eq!(YacConnAttr::MaxCharsetRatio as i32, 12);
+        assert_eq!(YacConnAttr::TafEnabled as i32, 14);
+        assert_eq!(YacConnAttr::TafCallback as i32, 15);
+        assert_eq!(YacConnAttr::MaxNcharsetRatio as i32, 17);
         assert_eq!(YacConnAttr::HeartbeatEnabled as i32, 18);
+    }
+
+    #[test]
+    fn charset_code_repr() {
+        assert_eq!(YacCharsetCode::ASCII as i32, 0);
+        assert_eq!(YacCharsetCode::GBK as i32, 1);
+        assert_eq!(YacCharsetCode::UTF8 as i32, 2);
+        assert_eq!(YacCharsetCode::ISO88591 as i32, 3);
+        assert_eq!(YacCharsetCode::UTF16 as i32, 4);
+        assert_eq!(YacCharsetCode::GB18030 as i32, 5);
+    }
+
+    #[test]
+    fn txn_isolation_repr() {
+        assert_eq!(YacTxnIsolation::ReadCommitted as i32, 0);
+        assert_eq!(YacTxnIsolation::CurrCommitted as i32, 1);
+        assert_eq!(YacTxnIsolation::Serializable as i32, 2);
     }
 }

@@ -30,8 +30,6 @@ fn skip_msg() -> &'static str {
 }
 
 #[test]
-#[cfg_attr(all(miri, windows), ignore = "SetThreadErrorMode is unsupported under Miri on Windows")]
-#[cfg_attr(all(miri, not(windows)), ignore = "dlopen is unsupported under Miri")]
 fn connect_ok() {
     let Some((url, user, pass)) = setup() else {
         eprintln!("{}", skip_msg());
@@ -42,8 +40,6 @@ fn connect_ok() {
 }
 
 #[test]
-#[cfg_attr(all(miri, windows), ignore = "SetThreadErrorMode is unsupported under Miri on Windows")]
-#[cfg_attr(all(miri, not(windows)), ignore = "dlopen is unsupported under Miri")]
 fn connect_wrong_password_errors() {
     let Some((url, user, _)) = setup() else {
         eprintln!("{}", skip_msg());
@@ -63,8 +59,6 @@ fn connect_wrong_password_errors() {
 }
 
 #[test]
-#[cfg_attr(all(miri, windows), ignore = "SetThreadErrorMode is unsupported under Miri on Windows")]
-#[cfg_attr(all(miri, not(windows)), ignore = "dlopen is unsupported under Miri")]
 fn connect_unreachable_errors() {
     let Some(_) = setup() else {
         eprintln!("{}", skip_msg());
@@ -79,8 +73,6 @@ fn connect_unreachable_errors() {
 }
 
 #[test]
-#[cfg_attr(all(miri, windows), ignore = "SetThreadErrorMode is unsupported under Miri on Windows")]
-#[cfg_attr(all(miri, not(windows)), ignore = "dlopen is unsupported under Miri")]
 fn connect_sequential() {
     let Some((url, user, pass)) = setup() else {
         eprintln!("{}", skip_msg());
@@ -93,8 +85,6 @@ fn connect_sequential() {
 }
 
 #[test]
-#[cfg_attr(all(miri, windows), ignore = "SetThreadErrorMode is unsupported under Miri on Windows")]
-#[cfg_attr(all(miri, not(windows)), ignore = "dlopen is unsupported under Miri")]
 fn connect_concurrent() {
     let Some((url, user, pass)) = setup() else {
         eprintln!("{}", skip_msg());

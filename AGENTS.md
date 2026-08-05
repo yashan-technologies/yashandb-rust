@@ -1,72 +1,36 @@
 # AGENTS.md
 
-Rust driver for YashanDB. Wraps the C `yascli` client library via `libloading`
-(dynamic loading at runtime — no linking to C headers). Single crate, no
-workspace, no CI, no lint config.
+## Project
+
+- Single Rust crate (`yashandb`), edition 2024, MSRV 1.95; it dynamically loads the C `yascli` client with `libloading`.
+- No CI, workspace, feature flags, or lint/task-runner configuration is present. `rustfmt.toml` sets `max_width = 120`.
 
 ## Commands
 
-- Build/test: `cargo build`, `cargo test` (no clippy config exists; don't
-  introduce one unless asked)
-- Format: `cargo fmt` (rustfmt.toml sets `max_width = 120`)
-- MSRV is **1.95** (edition 2024). Don't use APIs newer than 1.95; e.g.
-  `OnceLock::get_or_try_init` is still not stable — `src/library.rs` hand-rolls
-  the lock instead.
+- Format: `cargo fmt` (check only with `cargo fmt --check`).
+- Lint: `cargo clippy --all-targets`.
+- Build: `cargo build`.
+- Unit tests: `cargo test --lib`.
+- One integration test binary: `cargo test --test library`, `cargo test --test connect`, or `cargo test --test connection_attr`.
+- Full suite: `cargo test`.
+- Integration tests use the real client/database only when configured; otherwise they print a skip message and return successfully. To exercise them, set `YASCLI_HOME` (directory containing `yascli.dll` on Windows or `libyascli.so` elsewhere), `YASDB_URL`, `YASDB_USER`, and `YASDB_PASSWORD` before `cargo test`.
 
 ## Architecture
 
-- `src/ffi/raw.rs` is the **only** place for C type/function-pointer
-  declarations, `extern "C"` fns, `#[repr(C)]` structs, and C enum values. It
-  maps `yacli.h`.
-  - Naming: enum variants drop the C prefix (`YAC_SUCCESS` → `Success`), types
-    keep the `Yac` prefix (`YacHandle`).
-  - `#![allow(dead_code)]` is scoped to this module only; don't move it up.
-- Each ffi capability lives in its own module (`src/ffi/connect.rs`,
-  `src/ffi/diag.rs`) as `impl YacLib` methods. New symbols must be added to
-  `YacLib::from_loaded` in `src/ffi/mod.rs`; all symbols resolve at load time
-  so a bad library fails fast.
-- `YacLib` holds four attr symbols (`set/get_env_attr`, `set/get_conn_attr`)
-  that are loaded but marked `#[allow(dead_code)]` — reserved for the future
-  charset/attribute API. Don't remove them as "dead code"; they exist so a
-  library lacking them fails fast at load time.
-- `src/library.rs` `YAC_LIB` is a process-global `OnceLock` singleton.
-  **First load wins**: `load_library_with_path` with a different file after
-  load returns `Error::ClientLibrary` ("refusing to load from"). A failed load
-  leaves the library unloaded and retries later.
-- `src/load.rs` mirrors the Go driver's discovery: bare name first, then
-  `$HOME/.yashandb/client/lib` (or `%USERPROFILE%\.yashandb\client\lib`) with
-  bundled dependency libs preloaded. `Loaded` field order matters (main lib
-  drops before deps).
-- `Connection` is `Send + !Sync`. FFI handle methods take `&mut` even when
-  read-only — that exclusive borrow is what makes `Send` sound. Keep it.
-- `YacResult::Success | SuccessWithInfo` = Ok; anything else goes through
-  `get_diag_rec()` into `Error::Database`.
-- `src/lib.rs` sets `#![warn(missing_docs)]`; new public items need doc comments.
+- `src/ffi/raw.rs` is the only location for declarations that mirror `yacli.h`: C types, `extern "C"`/function pointers, `#[repr(C)]` structs, and enum values. Keep its `#![allow(dead_code)]` scoped there; raw enum variants drop the C prefix and types retain `Yac`.
+- FFI capabilities are separate modules implementing `YacLib` (`attr`, `conn`, `diag`). Every new dynamic symbol must be resolved in `YacLib::from_loaded` in `src/ffi/mod.rs`; symbols are required at load time so missing ones fail fast.
+- `src/load.rs` tries the bare platform library name first, then `%USERPROFILE%\\.yashandb\\client\\lib` on Windows or `$HOME/.yashandb/client/lib` elsewhere. Bundled dependencies are preloaded there; `Loaded` declares the main library before dependency handles so the main library drops first.
+- `src/library.rs` owns the process-global `YAC_LIB` singleton. First load wins: a different explicit path returns `Error::ClientLibrary`; failed loads leave the singleton unset for retry. `Connection::connect` must keep its lazy auto-load behavior.
+- `Connection` is `Send` but not `Sync`; FFI handle methods intentionally take `&mut` even for reads to enforce exclusive access.
+- `YacResult::Success` and `SuccessWithInfo` are successful. Other results are converted through diagnostics into `Error::Database`.
 
-## Constraints / gotchas
+## Constraints
 
-- C driver encodes strings as **GBK by default**; UTF-8 non-ASCII input/output
-  is garbled. Marked `TODO(attr)` in `src/ffi/connect.rs` and `diag.rs`. Don't
-  "fix" silently.
-- Connection params are length-prefixed with `i16` bytes; `conn_param_len`
-  rejects over-length strings with `Error::InvalidArgument`.
-- `Error` is `#[non_exhaustive]`; tests match on concrete variants.
-- Never add behavior that turns the lazy `connect()` auto-load into a
-  hard requirement; public API is `load_library` / `load_library_with_path` /
-  `Connection::connect`.
+- `ConnectionBuilder::connect` sets the environment charset to UTF-8 before connecting. Do not assume the client default encoding is usable for Rust strings.
+- Connection parameters are passed with `i16` byte lengths; `conn_param_len` rejects oversized strings with `Error::InvalidArgument`.
+- `Error` is `#[non_exhaustive]`; external matches must include a wildcard.
+- `src/lib.rs` enables `#![warn(missing_docs)]`; document every new public item.
 
-## Testing
+## Test Concurrency
 
-- Most unit tests run without a library, but some in `src/load.rs` and
-  `src/library.rs` also exercise the real yascli lib. Integration tests
-  (`tests/`) need a real lib + a real DB and are **skipped, not failed**, when
-  env is unset: `YASCLI_HOME` (dir with the lib), `YASDB_URL`, `YASDB_USER`,
-  `YASDB_PASSWORD`.
-- Library state is process-global, so any test touching loading/connecting
-  must take the shared `LIB_LOCK` mutex and use the skip-if-unset pattern
-  (see `tests/library.rs`, `tests/connect.rs`, `tests/common/mod.rs`, and the
-  `#[cfg(test)]` modules in `src/load.rs` / `src/library.rs`).
-- Real-library tests carry `#[cfg_attr(all(miri, ...), ignore = ...)]`; keep
-  these when adding tests that load or connect.
-- Run full suite with env vars:
-  `YASCLI_HOME=... YASDB_URL=... YASDB_USER=... YASDB_PASSWORD=... cargo test`
+- Library state is process-global. Tests that load/connect must serialize through their binary's `LIB_LOCK` and use the existing skip-if-unset helpers in `tests/common/mod.rs`; follow that pattern for new integration tests.

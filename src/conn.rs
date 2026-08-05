@@ -13,6 +13,17 @@ pub struct Connection {
     dbc: ffi::DbcHandle,
 }
 
+/// Transaction isolation level for a session.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TransactionIsolation {
+    /// Read committed.
+    ReadCommitted,
+    /// Current committed, a YashanDB-specific level.
+    CurrentCommitted,
+    /// Serializable.
+    Serializable,
+}
+
 impl Connection {
     /// Connect to a YashanDB instance.
     ///
@@ -43,26 +54,269 @@ impl Connection {
     ///   the fewest sessions
     /// - `standbyLoadBalance`: shuffle addresses, pick the standby node with
     ///   the fewest sessions
+    #[inline]
     pub fn connect(url: &str, username: &str, password: &str) -> Result<Self, Error> {
+        Connection::builder().connect(url, username, password)
+    }
+
+    /// Start building a connection with configurable attributes.
+    ///
+    /// See [`ConnectionBuilder`] for the attributes that can be set before
+    /// connecting.
+    #[inline]
+    pub const fn builder() -> ConnectionBuilder {
+        ConnectionBuilder::new()
+    }
+
+    // --- runtime conn attr getters/setters ---
+
+    /// Get the auto-commit mode.
+    #[inline]
+    pub fn auto_commit(&mut self) -> bool {
+        library::loaded_library().get_conn_auto_commit(&mut self.dbc)
+    }
+
+    /// Set the auto-commit mode.
+    #[inline]
+    pub fn set_auto_commit(&mut self, enabled: bool) {
+        library::loaded_library().set_conn_auto_commit(&mut self.dbc, enabled);
+    }
+
+    /// Get the transaction isolation level.
+    #[inline]
+    pub fn transaction_isolation(&mut self) -> TransactionIsolation {
+        match library::loaded_library().get_conn_transaction_isolation(&mut self.dbc) {
+            ffi::YacTxnIsolation::ReadCommitted => TransactionIsolation::ReadCommitted,
+            ffi::YacTxnIsolation::CurrCommitted => TransactionIsolation::CurrentCommitted,
+            ffi::YacTxnIsolation::Serializable => TransactionIsolation::Serializable,
+        }
+    }
+
+    /// Set the transaction isolation level.
+    ///
+    /// Sends a message to the server and may fail if the session is in a
+    /// transaction.
+    #[inline]
+    pub fn set_transaction_isolation(&mut self, isolation: TransactionIsolation) -> Result<(), Error> {
+        let level = match isolation {
+            TransactionIsolation::ReadCommitted => ffi::YacTxnIsolation::ReadCommitted,
+            TransactionIsolation::CurrentCommitted => ffi::YacTxnIsolation::CurrCommitted,
+            TransactionIsolation::Serializable => ffi::YacTxnIsolation::Serializable,
+        };
+        library::loaded_library().set_conn_transaction_isolation(&mut self.dbc, level)
+    }
+
+    /// Get whether heartbeat is enabled.
+    #[inline]
+    pub fn heartbeat_enabled(&mut self) -> bool {
+        library::loaded_library().get_conn_heartbeat_enabled(&mut self.dbc)
+    }
+
+    /// Get the packet size in bytes.
+    ///
+    /// The packet size is fixed at connect time; this only queries it.
+    #[inline]
+    pub fn packet_size(&mut self) -> u32 {
+        library::loaded_library().get_conn_packet_size(&mut self.dbc)
+    }
+}
+
+/// Builder for [`Connection`], allowing connection attributes to be set before
+/// connecting.
+pub struct ConnectionBuilder {
+    login_timeout: Option<u32>,
+    packet_size: Option<u32>,
+    auto_commit: Option<bool>,
+    transaction_isolation: Option<TransactionIsolation>,
+    heartbeat_enabled: Option<bool>,
+}
+
+impl ConnectionBuilder {
+    #[inline]
+    const fn new() -> Self {
+        Self {
+            login_timeout: None,
+            packet_size: None,
+            auto_commit: None,
+            transaction_isolation: None,
+            heartbeat_enabled: None,
+        }
+    }
+}
+
+/// RAII guard that frees env/dbc handles on drop.
+struct ConnectGuard<'a> {
+    lib: &'a ffi::YacLib,
+    env: Option<ffi::EnvHandle>,
+    dbc: Option<ffi::DbcHandle>,
+    connected: bool,
+}
+
+impl<'a> ConnectGuard<'a> {
+    #[inline]
+    const fn new(lib: &'a ffi::YacLib) -> Self {
+        Self {
+            lib,
+            env: None,
+            dbc: None,
+            connected: false,
+        }
+    }
+
+    /// Record that a connection has been established, so a subsequent drop
+    /// disconnects (rather than freeing a live session) before freeing dbc.
+    #[inline]
+    fn mark_connected(&mut self) {
+        self.connected = true;
+    }
+
+    #[inline]
+    fn set_env(&mut self, env: ffi::EnvHandle) -> &mut ffi::EnvHandle {
+        self.env = Some(env);
+        self.env.as_mut().unwrap()
+    }
+
+    #[inline]
+    fn set_dbc(&mut self, dbc: ffi::DbcHandle) -> &mut ffi::DbcHandle {
+        self.dbc = Some(dbc);
+        self.dbc.as_mut().unwrap()
+    }
+
+    #[inline]
+    fn dbc_mut(&mut self) -> &mut ffi::DbcHandle {
+        self.dbc.as_mut().unwrap()
+    }
+
+    #[inline]
+    fn into_handles(mut self) -> (ffi::EnvHandle, ffi::DbcHandle) {
+        let env = self.env.take().unwrap();
+        let dbc = self.dbc.take().unwrap();
+        std::mem::forget(self);
+        (env, dbc)
+    }
+}
+
+impl Drop for ConnectGuard<'_> {
+    #[inline]
+    fn drop(&mut self) {
+        if let Some(mut dbc) = self.dbc.take() {
+            if self.connected {
+                self.lib.disconnect(&mut dbc);
+            }
+            self.lib.free_dbc(&mut dbc);
+        }
+        if let Some(mut env) = self.env.take() {
+            self.lib.free_env(&mut env);
+        }
+    }
+}
+
+impl ConnectionBuilder {
+    /// Set the login timeout in seconds.
+    ///
+    /// Only applies to the login process; the default is 300 seconds. Some
+    /// client library versions reject this attribute (`unknown attribute id`),
+    /// so the error is returned at connect time.
+    #[inline]
+    pub const fn login_timeout(mut self, seconds: u32) -> Self {
+        self.login_timeout = Some(seconds);
+        self
+    }
+
+    /// Set the packet size in bytes.
+    ///
+    /// Must be within the range [64 KiB, 32 MiB]; otherwise
+    /// [`Error::InvalidArgument`] is returned at connect time.
+    #[inline]
+    pub const fn packet_size(mut self, bytes: u32) -> Self {
+        self.packet_size = Some(bytes);
+        self
+    }
+
+    /// Set the auto-commit mode.
+    #[inline]
+    pub const fn auto_commit(mut self, enabled: bool) -> Self {
+        self.auto_commit = Some(enabled);
+        self
+    }
+
+    /// Set the transaction isolation level.
+    #[inline]
+    pub const fn transaction_isolation(mut self, isolation: TransactionIsolation) -> Self {
+        self.transaction_isolation = Some(isolation);
+        self
+    }
+
+    /// Set whether heartbeat is enabled.
+    #[inline]
+    pub const fn heartbeat_enabled(mut self, enabled: bool) -> Self {
+        self.heartbeat_enabled = Some(enabled);
+        self
+    }
+
+    /// Establish a connection with the configured attributes applied.
+    pub fn connect(self, url: &str, username: &str, password: &str) -> Result<Connection, Error> {
         let lib = library::library(None)?;
 
-        let mut env = lib.alloc_env()?;
-        let mut dbc = match lib.alloc_dbc(&mut env) {
-            Ok(dbc) => dbc,
-            Err(e) => {
-                lib.free_env(&mut env);
-                return Err(e);
-            }
+        let mut g = ConnectGuard::new(lib);
+        let dbc = {
+            let env = g.set_env(lib.alloc_env()?);
+            set_env_attrs(lib, env);
+            let dbc = lib.alloc_dbc(env)?;
+            g.set_dbc(dbc)
         };
 
-        if let Err(e) = lib.connect(&mut dbc, url, username, password) {
-            lib.free_dbc(&mut dbc);
-            lib.free_env(&mut env);
-            return Err(e);
+        // Pre-connect attrs: login_timeout, packet_size, auto_commit, heartbeat_enabled.
+        if let Some(seconds) = self.login_timeout {
+            lib.set_conn_login_timeout(dbc, seconds)?;
+        }
+        if let Some(bytes) = self.packet_size {
+            const MIN_PACKET_SIZE: u32 = 64 * 1024;
+            const MAX_PACKET_SIZE: u32 = 32 * 1024 * 1024;
+            if !(MIN_PACKET_SIZE..=MAX_PACKET_SIZE).contains(&bytes) {
+                return Err(Error::InvalidArgument(format!(
+                    "packet size {bytes} is out of range [{MIN_PACKET_SIZE}, {MAX_PACKET_SIZE}]"
+                )));
+            }
+            lib.set_conn_packet_size(dbc, bytes);
+        }
+        if let Some(enabled) = self.auto_commit {
+            lib.set_conn_auto_commit(dbc, enabled);
+        }
+        if let Some(enabled) = self.heartbeat_enabled {
+            lib.set_conn_heartbeat_enabled(dbc, enabled);
         }
 
-        Ok(Self { env, dbc })
+        lib.connect(dbc, url, username, password)?;
+
+        // Isolation is set on a live session and may fail if the session is in a
+        // transaction. If it fails after a successful connect, the guard's Drop
+        // disconnects (connected was marked above) before freeing the handles.
+        g.mark_connected();
+        if let Some(isolation) = self.transaction_isolation {
+            lib.set_conn_transaction_isolation(
+                g.dbc_mut(),
+                match isolation {
+                    TransactionIsolation::ReadCommitted => ffi::YacTxnIsolation::ReadCommitted,
+                    TransactionIsolation::CurrentCommitted => ffi::YacTxnIsolation::CurrCommitted,
+                    TransactionIsolation::Serializable => ffi::YacTxnIsolation::Serializable,
+                },
+            )?;
+        }
+
+        let (env, dbc) = g.into_handles();
+        Ok(Connection { env, dbc })
     }
+}
+
+/// Configure the env attributes that identify this client before connecting.
+///
+/// All three are supported by the baseline client library, so the per-attr
+/// setters `.expect()` internally; this cannot fail.
+fn set_env_attrs(lib: &ffi::YacLib, env: &mut ffi::EnvHandle) {
+    lib.set_env_charset_code(env, ffi::YacCharsetCode::UTF8);
+    lib.set_env_client_driver(env, "YashanDB Rust Driver");
+    lib.set_env_software_version(env, env!("CARGO_PKG_VERSION"));
 }
 
 /// SAFETY: `Connection` owns its raw handles exclusively and is `!Sync` (the raw
@@ -80,5 +334,33 @@ impl Drop for Connection {
         lib.disconnect(&mut self.dbc);
         lib.free_dbc(&mut self.dbc);
         lib.free_env(&mut self.env);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ffi::YacTxnIsolation;
+
+    #[test]
+    fn txn_isolation_conversion_roundtrip() {
+        for (rust, raw) in [
+            (TransactionIsolation::ReadCommitted, YacTxnIsolation::ReadCommitted),
+            (TransactionIsolation::CurrentCommitted, YacTxnIsolation::CurrCommitted),
+            (TransactionIsolation::Serializable, YacTxnIsolation::Serializable),
+        ] {
+            let raw_from_rust = match rust {
+                TransactionIsolation::ReadCommitted => YacTxnIsolation::ReadCommitted,
+                TransactionIsolation::CurrentCommitted => YacTxnIsolation::CurrCommitted,
+                TransactionIsolation::Serializable => YacTxnIsolation::Serializable,
+            };
+            assert_eq!(raw_from_rust as i32, raw as i32);
+            let rust_from_raw = match raw {
+                YacTxnIsolation::ReadCommitted => TransactionIsolation::ReadCommitted,
+                YacTxnIsolation::CurrCommitted => TransactionIsolation::CurrentCommitted,
+                YacTxnIsolation::Serializable => TransactionIsolation::Serializable,
+            };
+            assert_eq!(rust_from_raw, rust);
+        }
     }
 }

@@ -1,6 +1,7 @@
 //! `YacLib`, `EnvHandle`, `DbcHandle`, and module declarations.
 
-mod connect;
+mod attr;
+mod conn;
 mod diag;
 mod raw;
 
@@ -13,7 +14,8 @@ use crate::error::Error;
 use crate::load::{Loaded, MAIN_LIB_NAME};
 use raw::*;
 
-pub use connect::{DbcHandle, EnvHandle};
+pub use conn::{DbcHandle, EnvHandle};
+pub use raw::{YacCharsetCode, YacTxnIsolation};
 
 /// Loaded yascli shared library and resolved function pointers.
 pub struct YacLib {
@@ -25,15 +27,9 @@ pub struct YacLib {
     free_handle: YacFreeHandle,
     connect: YacConnect,
     disconnect: YacDisconnect,
-    // Reserved for the attribute API (iter2); loaded now so a library built
-    // without these functions fails fast at load time instead of at call time.
-    #[allow(dead_code)]
     set_env_attr: YacSetEnvAttr,
-    #[allow(dead_code)]
     get_env_attr: YacGetEnvAttr,
-    #[allow(dead_code)]
     set_conn_attr: YacSetConnAttr,
-    #[allow(dead_code)]
     get_conn_attr: YacGetConnAttr,
     get_diag_rec: YacGetDiagRec,
 }

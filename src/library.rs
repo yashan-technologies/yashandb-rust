@@ -99,8 +99,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(all(miri, windows), ignore = "SetThreadErrorMode is unsupported under Miri on Windows")]
-    #[cfg_attr(all(miri, not(windows)), ignore = "dlopen is unsupported under Miri")]
     fn load_with_path_then_idempotent_then_first_load_wins() {
         let _g = LIB_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let Some(path) = real_lib_path() else {

@@ -192,8 +192,6 @@ mod tests {
     // --- load_explicit error paths (no external library needed) ---
 
     #[test]
-    #[cfg_attr(all(miri, windows), ignore = "SetThreadErrorMode is unsupported under Miri on Windows")]
-    #[cfg_attr(all(miri, not(windows)), ignore = "dlopen is unsupported under Miri")]
     fn load_explicit_missing_path_errors() {
         let path = Path::new("no").join("such").join("dir").join("yascli.lib");
         let err = load_explicit(&path).unwrap_err();
@@ -207,8 +205,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(all(miri, windows), ignore = "SetThreadErrorMode is unsupported under Miri on Windows")]
-    #[cfg_attr(all(miri, not(windows)), ignore = "dlopen is unsupported under Miri")]
     fn load_explicit_non_library_file_errors() {
         // Cargo.toml exists but is not a dynamic library.
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
@@ -217,8 +213,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(all(miri, windows), ignore = "SetThreadErrorMode is unsupported under Miri on Windows")]
-    #[cfg_attr(all(miri, not(windows)), ignore = "dlopen is unsupported under Miri")]
     fn load_explicit_directory_errors() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"));
         let err = load_explicit(path).unwrap_err();
@@ -242,8 +236,6 @@ mod tests {
     /// Load the real `yascli` library from `$YASCLI_HOME` via an explicit path.
     /// Skipped (not failed) when `YASCLI_HOME` is unset.
     #[test]
-    #[cfg_attr(all(miri, windows), ignore = "SetThreadErrorMode is unsupported under Miri on Windows")]
-    #[cfg_attr(all(miri, not(windows)), ignore = "dlopen is unsupported under Miri")]
     fn load_explicit_with_real_library() {
         let Some(home) = std::env::var_os("YASCLI_HOME") else {
             eprintln!("skipping: YASCLI_HOME not set");

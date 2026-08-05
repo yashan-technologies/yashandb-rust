@@ -22,6 +22,13 @@ The minimum supported Rust version is **1.95**.
   `%USERPROFILE%\.yashandb\client\lib` (Windows).
 - A reachable YashanDB instance to connect to.
 
+The client library version **23.4.1.100 or later** is the supported baseline.
+Connection attributes the baseline supports are treated as infallible (the
+underlying call panics internally on failure), so using an older client library
+may cause a panic on an unsupported attribute. Only operations that legitimately
+fail at runtime (e.g. setting the transaction isolation mid-transaction, or the
+baseline-unsupported login timeout) return a `Result`.
+
 ## Usage
 
 Add the dependency to your `Cargo.toml`:

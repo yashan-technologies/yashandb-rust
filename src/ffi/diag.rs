@@ -36,8 +36,8 @@ impl YacLib {
             // the buffer bounds so we never scan uninitialized bytes.
             let len = (indicator.max(0) as usize).min(message.len());
             let bytes = unsafe { std::slice::from_raw_parts(message.as_ptr() as *const u8, len) };
-            // TODO(attr): the driver's message is encoded in the env charset
-            // (GBK by default); decode accordingly once the charset attr exists.
+            // The connection always sets the env charset to UTF-8 (`set_env_attrs`
+            // in conn.rs), so decoding as UTF-8 is correct.
             let msg = match CStr::from_bytes_until_nul(bytes) {
                 Ok(cstr) => cstr.to_string_lossy().into_owned(),
                 // Length excludes the NUL terminator: use the bytes as-is.
