@@ -6,7 +6,6 @@ use std::slice;
 use crate::conn::Connection;
 use crate::error::Error;
 use crate::ffi::{StmtHandle, YacExtType, YacType};
-use crate::library;
 use crate::result_set::ResultSet;
 use crate::types::{ColumnInfo, DataTypeInfo};
 
@@ -27,21 +26,21 @@ impl<'conn> Statement<'conn> {
 
     #[inline]
     pub fn execute(&mut self, sql: &str) -> Result<ExecResult, Error> {
-        let lib = library::loaded_library();
+        let lib = self.conn.lib();
         lib.direct_execute(&mut self.stmt, sql)?;
         Ok(ExecResult {
-            rows_affected: lib.get_stmt_rows_affected(&mut self.stmt)?,
+            rows_affected: lib.get_stmt_rows_affected(&self.stmt)?,
         })
     }
 
     #[inline]
     pub fn query(mut self, sql: &str) -> Result<ResultSet<'conn>, Error> {
-        library::loaded_library().direct_execute(&mut self.stmt, sql)?;
+        self.conn.lib().direct_execute(&mut self.stmt, sql)?;
         ResultSet::from_stmt(self)
     }
 
     #[inline]
-    pub fn schema(&mut self) -> Result<Vec<ColumnInfo>, Error> {
+    pub fn schema(&self) -> Result<Vec<ColumnInfo>, Error> {
         let count = self.result_column_count()?;
 
         let mut schema = Vec::with_capacity(count as usize);
@@ -52,7 +51,7 @@ impl<'conn> Statement<'conn> {
         Ok(schema)
     }
 
-    fn column_info(&mut self, id: u16) -> Result<ColumnInfo, Error> {
+    fn column_info(&self, id: u16) -> Result<ColumnInfo, Error> {
         let name = self.column_name(id)?;
 
         let data_type_info = match self.column_type(id)? {
@@ -106,16 +105,16 @@ impl<'conn> Statement<'conn> {
     }
 
     #[inline]
-    fn result_column_count(&mut self) -> Result<u16, Error> {
-        library::loaded_library().get_num_result_cols(&mut self.stmt)
+    fn result_column_count(&self) -> Result<u16, Error> {
+        self.conn.lib().get_num_result_cols(&self.stmt)
     }
 
     #[inline]
-    fn column_name(&mut self, index: u16) -> Result<String, Error> {
+    fn column_name(&self, index: u16) -> Result<String, Error> {
         let mut name_bytes: [MaybeUninit<u8>; COLUMN_NAME_BUFFER_SIZE] = unsafe { MaybeUninit::uninit().assume_init() };
         // The client initializes the returned name bytes and reports their length.
         let name_buffer = unsafe { slice::from_raw_parts_mut(name_bytes.as_mut_ptr().cast::<u8>(), name_bytes.len()) };
-        let name_len = library::loaded_library().get_stmt_col_name(&mut self.stmt, index, name_buffer)?;
+        let name_len = self.conn.lib().get_stmt_col_name(&self.stmt, index, name_buffer)?;
         assert!(
             name_len as usize <= name_buffer.len(),
             "client reported a column name longer than its output buffer"
@@ -125,37 +124,37 @@ impl<'conn> Statement<'conn> {
     }
 
     #[inline]
-    fn column_type(&mut self, index: u16) -> Result<YacType, Error> {
-        library::loaded_library().get_stmt_col_type(&mut self.stmt, index)
+    fn column_type(&self, index: u16) -> Result<YacType, Error> {
+        self.conn.lib().get_stmt_col_type(&self.stmt, index)
     }
 
     #[inline]
-    fn column_size(&mut self, index: u16) -> Result<u32, Error> {
-        library::loaded_library().get_stmt_col_size(&mut self.stmt, index)
+    fn column_size(&self, index: u16) -> Result<u32, Error> {
+        self.conn.lib().get_stmt_col_size(&self.stmt, index)
     }
 
     #[inline]
-    fn column_char_size(&mut self, index: u16) -> Result<u32, Error> {
-        library::loaded_library().get_stmt_col_char_size(&mut self.stmt, index)
+    fn column_char_size(&self, index: u16) -> Result<u32, Error> {
+        self.conn.lib().get_stmt_col_char_size(&self.stmt, index)
     }
 
     #[inline]
-    fn column_precision(&mut self, index: u16) -> Result<u8, Error> {
-        library::loaded_library().get_stmt_col_precision(&mut self.stmt, index)
+    fn column_precision(&self, index: u16) -> Result<u8, Error> {
+        self.conn.lib().get_stmt_col_precision(&self.stmt, index)
     }
 
     #[inline]
-    fn column_scale(&mut self, index: u16) -> Result<i8, Error> {
-        library::loaded_library().get_stmt_col_scale(&mut self.stmt, index)
+    fn column_scale(&self, index: u16) -> Result<i8, Error> {
+        self.conn.lib().get_stmt_col_scale(&self.stmt, index)
     }
 
     #[inline]
-    fn column_nullable(&mut self, index: u16) -> Result<bool, Error> {
-        library::loaded_library().get_stmt_col_nullable(&mut self.stmt, index)
+    fn column_nullable(&self, index: u16) -> Result<bool, Error> {
+        self.conn.lib().get_stmt_col_nullable(&self.stmt, index)
     }
 
     #[inline]
-    pub fn charset_ratios(&mut self) -> Result<(u32, u32), Error> {
+    pub fn charset_ratios(&self) -> Result<(u32, u32), Error> {
         self.conn.charset_ratios()
     }
 
@@ -167,17 +166,19 @@ impl<'conn> Statement<'conn> {
         buffer: &mut [u8],
         indicator: &mut i32,
     ) -> Result<(), Error> {
-        library::loaded_library().bind_column(&mut self.stmt, index, ext_type, buffer, indicator)
+        self.conn
+            .lib()
+            .bind_column(&mut self.stmt, index, ext_type, buffer, indicator)
     }
 
     #[inline]
     pub fn fetch(&mut self) -> Result<u32, Error> {
-        library::loaded_library().fetch(&mut self.stmt)
+        self.conn.lib().fetch(&mut self.stmt)
     }
 
     #[inline]
     pub fn finish(mut self) -> Result<(), Error> {
-        let result = library::loaded_library().free_stmt(&mut self.stmt);
+        let result = self.conn.lib().free_stmt(&mut self.stmt);
         std::mem::forget(self);
         result
     }
@@ -186,7 +187,7 @@ impl<'conn> Statement<'conn> {
 impl Drop for Statement<'_> {
     #[inline]
     fn drop(&mut self) {
-        let _ = library::loaded_library().free_stmt(&mut self.stmt);
+        let _ = self.conn.lib().free_stmt(&mut self.stmt);
     }
 }
 

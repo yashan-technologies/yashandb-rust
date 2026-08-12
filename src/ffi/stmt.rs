@@ -31,7 +31,7 @@ impl YacLib {
     }
 
     #[inline]
-    pub fn get_stmt_rows_affected(&self, stmt: &mut StmtHandle) -> Result<u64, Error> {
+    pub fn get_stmt_rows_affected(&self, stmt: &StmtHandle) -> Result<u64, Error> {
         let mut rows: YacUint64 = 0;
         let mut length = 0;
         self.try_call(|| unsafe {
@@ -47,7 +47,7 @@ impl YacLib {
     }
 
     #[inline]
-    pub fn get_num_result_cols(&self, stmt: &mut StmtHandle) -> Result<u16, Error> {
+    pub fn get_num_result_cols(&self, stmt: &StmtHandle) -> Result<u16, Error> {
         let mut count = 0;
         self.try_call(|| unsafe { (self.num_result_cols)(stmt.0.as_ptr(), &mut count) })?;
         assert!(count >= 0);
@@ -57,7 +57,7 @@ impl YacLib {
     #[inline]
     fn get_stmt_col_bytes(
         &self,
-        stmt: &mut StmtHandle,
+        stmt: &StmtHandle,
         index: u16,
         attr: YacColAttr,
         buffer: &mut [u8],
@@ -78,12 +78,12 @@ impl YacLib {
     }
 
     #[inline]
-    pub fn get_stmt_col_name(&self, stmt: &mut StmtHandle, index: u16, buffer: &mut [u8]) -> Result<u32, Error> {
+    pub fn get_stmt_col_name(&self, stmt: &StmtHandle, index: u16, buffer: &mut [u8]) -> Result<u32, Error> {
         self.get_stmt_col_bytes(stmt, index, YacColAttr::Name, buffer)
     }
 
     #[inline]
-    fn get_stmt_col_u32(&self, stmt: &mut StmtHandle, index: u16, attr: YacColAttr) -> Result<u32, Error> {
+    fn get_stmt_col_u32(&self, stmt: &StmtHandle, index: u16, attr: YacColAttr) -> Result<u32, Error> {
         let mut value = 0_u32;
         let mut length = 0;
         self.try_call(|| unsafe {
@@ -100,7 +100,7 @@ impl YacLib {
     }
 
     #[inline]
-    fn get_stmt_col_u8(&self, stmt: &mut StmtHandle, index: u16, attr: YacColAttr) -> Result<u8, Error> {
+    fn get_stmt_col_u8(&self, stmt: &StmtHandle, index: u16, attr: YacColAttr) -> Result<u8, Error> {
         let mut value = 0_u8;
         let mut length = 0;
         self.try_call(|| unsafe {
@@ -117,7 +117,7 @@ impl YacLib {
     }
 
     #[inline]
-    fn get_stmt_col_i8(&self, stmt: &mut StmtHandle, index: u16, attr: YacColAttr) -> Result<i8, Error> {
+    fn get_stmt_col_i8(&self, stmt: &StmtHandle, index: u16, attr: YacColAttr) -> Result<i8, Error> {
         let mut value = 0_i8;
         let mut length = 0;
         self.try_call(|| unsafe {
@@ -134,12 +134,12 @@ impl YacLib {
     }
 
     #[inline]
-    pub fn get_stmt_col_size(&self, stmt: &mut StmtHandle, index: u16) -> Result<u32, Error> {
+    pub fn get_stmt_col_size(&self, stmt: &StmtHandle, index: u16) -> Result<u32, Error> {
         self.get_stmt_col_u32(stmt, index, YacColAttr::Size)
     }
 
     #[inline]
-    pub fn get_stmt_col_type(&self, stmt: &mut StmtHandle, index: u16) -> Result<YacType, Error> {
+    pub fn get_stmt_col_type(&self, stmt: &StmtHandle, index: u16) -> Result<YacType, Error> {
         let mut value = YacType::Unknown;
         let mut length = 0;
         self.try_call(|| unsafe {
@@ -156,23 +156,23 @@ impl YacLib {
     }
 
     #[inline]
-    pub fn get_stmt_col_precision(&self, stmt: &mut StmtHandle, index: u16) -> Result<u8, Error> {
+    pub fn get_stmt_col_precision(&self, stmt: &StmtHandle, index: u16) -> Result<u8, Error> {
         self.get_stmt_col_u8(stmt, index, YacColAttr::Precision)
     }
 
     #[inline]
-    pub fn get_stmt_col_nullable(&self, stmt: &mut StmtHandle, index: u16) -> Result<bool, Error> {
+    pub fn get_stmt_col_nullable(&self, stmt: &StmtHandle, index: u16) -> Result<bool, Error> {
         self.get_stmt_col_u8(stmt, index, YacColAttr::Nullable)
             .map(|value| value != 0)
     }
 
     #[inline]
-    pub fn get_stmt_col_char_size(&self, stmt: &mut StmtHandle, index: u16) -> Result<u32, Error> {
+    pub fn get_stmt_col_char_size(&self, stmt: &StmtHandle, index: u16) -> Result<u32, Error> {
         self.get_stmt_col_u32(stmt, index, YacColAttr::CharSize)
     }
 
     #[inline]
-    pub fn get_stmt_col_scale(&self, stmt: &mut StmtHandle, index: u16) -> Result<i8, Error> {
+    pub fn get_stmt_col_scale(&self, stmt: &StmtHandle, index: u16) -> Result<i8, Error> {
         self.get_stmt_col_i8(stmt, index, YacColAttr::Scale)
     }
 

@@ -7,10 +7,6 @@ use crate::ffi::raw::*;
 use crate::ffi::{DbcHandle, EnvHandle, YacLib};
 
 impl YacLib {
-    // Handles below take `&mut` even when only read, matching the conn.rs
-    // convention: the `&mut` borrow guarantees exclusive access so the same C
-    // handle is never touched concurrently from multiple threads.
-
     // --- 4 basic functions ---
 
     /// Set an env attribute. `value` points at the raw bytes; `length` is the byte count.
@@ -32,7 +28,7 @@ impl YacLib {
     #[inline]
     fn get_env_attr(
         &self,
-        env: &mut EnvHandle,
+        env: &EnvHandle,
         attr: YacEnvAttr,
         value: *mut c_void,
         buf_len: YacInt32,
@@ -59,7 +55,7 @@ impl YacLib {
     #[inline]
     fn get_conn_attr(
         &self,
-        dbc: &mut DbcHandle,
+        dbc: &DbcHandle,
         attr: YacConnAttr,
         value: *mut c_void,
         buf_len: YacInt32,
@@ -94,7 +90,7 @@ impl YacLib {
 
     /// Get a connection attribute as an `i32`.
     #[inline]
-    fn get_conn_attr_i32(&self, dbc: &mut DbcHandle, attr: YacConnAttr) -> Result<i32, Error> {
+    fn get_conn_attr_i32(&self, dbc: &DbcHandle, attr: YacConnAttr) -> Result<i32, Error> {
         let mut v: i32 = 0;
         let mut string_length: YacInt32 = 0;
         self.get_conn_attr(
@@ -109,7 +105,7 @@ impl YacLib {
 
     /// Get a connection attribute as a `u32`.
     #[inline]
-    fn get_conn_attr_u32(&self, dbc: &mut DbcHandle, attr: YacConnAttr) -> Result<u32, Error> {
+    fn get_conn_attr_u32(&self, dbc: &DbcHandle, attr: YacConnAttr) -> Result<u32, Error> {
         let mut v: u32 = 0;
         let mut string_length: YacInt32 = 0;
         self.get_conn_attr(
@@ -216,7 +212,7 @@ impl YacLib {
     ///
     /// Supported by the baseline client library; this cannot fail at runtime.
     #[inline]
-    pub fn get_conn_auto_commit(&self, dbc: &mut DbcHandle) -> bool {
+    pub fn get_conn_auto_commit(&self, dbc: &DbcHandle) -> bool {
         self.get_conn_attr_i32(dbc, YacConnAttr::AutoCommit)
             .expect("yacGetConnAttr(YAC_ATTR_AUTOCOMMIT) failed")
             != 0
@@ -226,7 +222,7 @@ impl YacLib {
     ///
     /// Supported by the baseline client library; this cannot fail at runtime.
     #[inline]
-    pub fn get_conn_heartbeat_enabled(&self, dbc: &mut DbcHandle) -> bool {
+    pub fn get_conn_heartbeat_enabled(&self, dbc: &DbcHandle) -> bool {
         self.get_conn_attr_i32(dbc, YacConnAttr::HeartbeatEnabled)
             .expect("yacGetConnAttr(YAC_ATTR_HEARTBEAT_ENABLED) failed")
             != 0
@@ -238,7 +234,7 @@ impl YacLib {
     /// returns an unrecognized isolation level (ffi enum mismatch: a developer
     /// error).
     #[inline]
-    pub fn get_conn_transaction_isolation(&self, dbc: &mut DbcHandle) -> YacTxnIsolation {
+    pub fn get_conn_transaction_isolation(&self, dbc: &DbcHandle) -> YacTxnIsolation {
         let v = self
             .get_conn_attr_i32(dbc, YacConnAttr::TransactionIsolation)
             .expect("yacGetConnAttr(YAC_ATTR_TXN_ISOLATION) failed");
@@ -253,7 +249,7 @@ impl YacLib {
     /// Get the login timeout in seconds (`YAC_ATTR_LOGIN_TIMEOUT`).
     #[allow(dead_code)]
     #[inline]
-    pub fn get_conn_login_timeout(&self, dbc: &mut DbcHandle) -> u32 {
+    pub fn get_conn_login_timeout(&self, dbc: &DbcHandle) -> u32 {
         self.get_conn_attr_u32(dbc, YacConnAttr::LoginTimeout)
             .expect("yacGetConnAttr(YAC_ATTR_LOGIN_TIMEOUT) failed")
     }
@@ -262,20 +258,20 @@ impl YacLib {
     ///
     /// Supported by the baseline client library; this cannot fail at runtime.
     #[inline]
-    pub fn get_conn_packet_size(&self, dbc: &mut DbcHandle) -> u32 {
+    pub fn get_conn_packet_size(&self, dbc: &DbcHandle) -> u32 {
         self.get_conn_attr_u32(dbc, YacConnAttr::PacketSize)
             .expect("yacGetConnAttr(YAC_ATTR_PACKET_SIZE) failed")
     }
 
     /// Get the maximum bytes per database character for the current connection.
     #[inline]
-    pub fn get_conn_max_charset_ratio(&self, dbc: &mut DbcHandle) -> Result<u32, Error> {
+    pub fn get_conn_max_charset_ratio(&self, dbc: &DbcHandle) -> Result<u32, Error> {
         self.get_conn_attr_u32(dbc, YacConnAttr::MaxCharsetRatio)
     }
 
     /// Get the maximum bytes per national character for the current connection.
     #[inline]
-    pub fn get_conn_max_ncharset_ratio(&self, dbc: &mut DbcHandle) -> Result<u32, Error> {
+    pub fn get_conn_max_ncharset_ratio(&self, dbc: &DbcHandle) -> Result<u32, Error> {
         self.get_conn_attr_u32(dbc, YacConnAttr::MaxNcharsetRatio)
     }
 }

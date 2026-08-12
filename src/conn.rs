@@ -11,6 +11,7 @@ use crate::stmt::{ExecResult, Statement};
 /// `Send` so the connection can be moved to a worker thread; `!Sync` because the
 /// underlying C handles must not be accessed concurrently from multiple threads.
 pub struct Connection {
+    lib: &'static ffi::YacLib,
     env: ffi::EnvHandle,
     dbc: ffi::DbcHandle,
 }
@@ -59,24 +60,29 @@ impl Connection {
         ConnectionBuilder::new()
     }
 
+    #[inline]
+    pub(crate) fn lib(&self) -> &'static ffi::YacLib {
+        self.lib
+    }
+
     // --- runtime conn attr getters/setters ---
 
     /// Get the auto-commit mode.
     #[inline]
-    pub fn auto_commit(&mut self) -> bool {
-        library::loaded_library().get_conn_auto_commit(&mut self.dbc)
+    pub fn auto_commit(&self) -> bool {
+        self.lib.get_conn_auto_commit(&self.dbc)
     }
 
     /// Set the auto-commit mode.
     #[inline]
     pub fn set_auto_commit(&mut self, enabled: bool) {
-        library::loaded_library().set_conn_auto_commit(&mut self.dbc, enabled);
+        self.lib.set_conn_auto_commit(&mut self.dbc, enabled);
     }
 
     /// Get the transaction isolation level.
     #[inline]
-    pub fn transaction_isolation(&mut self) -> TransactionIsolation {
-        match library::loaded_library().get_conn_transaction_isolation(&mut self.dbc) {
+    pub fn transaction_isolation(&self) -> TransactionIsolation {
+        match self.lib.get_conn_transaction_isolation(&self.dbc) {
             ffi::YacTxnIsolation::ReadCommitted => TransactionIsolation::ReadCommitted,
             ffi::YacTxnIsolation::CurrCommitted => TransactionIsolation::CurrentCommitted,
             ffi::YacTxnIsolation::Serializable => TransactionIsolation::Serializable,
@@ -94,34 +100,33 @@ impl Connection {
             TransactionIsolation::CurrentCommitted => ffi::YacTxnIsolation::CurrCommitted,
             TransactionIsolation::Serializable => ffi::YacTxnIsolation::Serializable,
         };
-        library::loaded_library().set_conn_transaction_isolation(&mut self.dbc, level)
+        self.lib.set_conn_transaction_isolation(&mut self.dbc, level)
     }
 
     /// Get whether heartbeat is enabled.
     #[inline]
-    pub fn heartbeat_enabled(&mut self) -> bool {
-        library::loaded_library().get_conn_heartbeat_enabled(&mut self.dbc)
+    pub fn heartbeat_enabled(&self) -> bool {
+        self.lib.get_conn_heartbeat_enabled(&self.dbc)
     }
 
     /// Get the packet size in bytes.
     ///
     /// The packet size is fixed at connect time; this only queries it.
     #[inline]
-    pub fn packet_size(&mut self) -> u32 {
-        library::loaded_library().get_conn_packet_size(&mut self.dbc)
+    pub fn packet_size(&self) -> u32 {
+        self.lib.get_conn_packet_size(&self.dbc)
     }
 
     #[inline]
     pub(crate) fn alloc_stmt(&mut self) -> Result<ffi::StmtHandle, Error> {
-        library::loaded_library().alloc_stmt(&mut self.dbc)
+        self.lib.alloc_stmt(&mut self.dbc)
     }
 
     #[inline]
-    pub(crate) fn charset_ratios(&mut self) -> Result<(u32, u32), Error> {
-        let lib = library::loaded_library();
+    pub(crate) fn charset_ratios(&self) -> Result<(u32, u32), Error> {
         Ok((
-            lib.get_conn_max_charset_ratio(&mut self.dbc)?,
-            lib.get_conn_max_ncharset_ratio(&mut self.dbc)?,
+            self.lib.get_conn_max_charset_ratio(&self.dbc)?,
+            self.lib.get_conn_max_ncharset_ratio(&self.dbc)?,
         ))
     }
 
@@ -405,7 +410,7 @@ impl ConnectionBuilder {
         }
 
         let (env, dbc) = g.into_handles();
-        Ok(Connection { env, dbc })
+        Ok(Connection { lib, env, dbc })
     }
 }
 
@@ -430,10 +435,9 @@ unsafe impl Send for Connection {}
 impl Drop for Connection {
     #[inline]
     fn drop(&mut self) {
-        let lib = library::loaded_library();
-        lib.disconnect(&mut self.dbc);
-        lib.free_dbc(&mut self.dbc);
-        lib.free_env(&mut self.env);
+        self.lib.disconnect(&mut self.dbc);
+        self.lib.free_dbc(&mut self.dbc);
+        self.lib.free_env(&mut self.env);
     }
 }
 

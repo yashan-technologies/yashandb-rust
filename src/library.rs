@@ -77,12 +77,6 @@ pub fn load_library_with_path(path: &str) -> Result<(), Error> {
     library(Some(Path::new(path))).map(|_| ())
 }
 
-/// The loaded library; `connect` has already loaded it by construction.
-#[inline]
-pub(crate) fn loaded_library() -> &'static YacLib {
-    YAC_LIB.get().expect("connection implies library loaded")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

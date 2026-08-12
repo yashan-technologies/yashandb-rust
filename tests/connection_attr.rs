@@ -43,7 +43,7 @@ fn builder_packet_size_roundtrip() {
         eprintln!("{}", skip_msg());
         return;
     };
-    let mut conn = Connection::builder()
+    let conn = Connection::builder()
         .packet_size(128 * 1024)
         .connect(&url, &user, &pass)
         .expect("connect should succeed");
@@ -56,7 +56,7 @@ fn builder_auto_commit_roundtrip() {
         eprintln!("{}", skip_msg());
         return;
     };
-    let mut conn = Connection::builder()
+    let conn = Connection::builder()
         .auto_commit(false)
         .connect(&url, &user, &pass)
         .expect("connect should succeed");
@@ -69,7 +69,7 @@ fn builder_heartbeat_enabled_roundtrip() {
         eprintln!("{}", skip_msg());
         return;
     };
-    let mut conn = Connection::builder()
+    let conn = Connection::builder()
         .heartbeat_enabled(true)
         .connect(&url, &user, &pass)
         .expect("connect should succeed");
@@ -84,7 +84,7 @@ fn builder_accepts_attribute_boundaries_and_alternate_values() {
         eprintln!("{}", skip_msg());
         return;
     };
-    let mut conn = Connection::builder()
+    let conn = Connection::builder()
         .packet_size(64 * 1024)
         .auto_commit(true)
         .heartbeat_enabled(false)
@@ -103,7 +103,7 @@ fn builder_transaction_isolation_roundtrip() {
         eprintln!("{}", skip_msg());
         return;
     };
-    let mut conn = Connection::builder()
+    let conn = Connection::builder()
         .transaction_isolation(TransactionIsolation::ReadCommitted)
         .connect(&url, &user, &pass)
         .expect("connect should succeed");
