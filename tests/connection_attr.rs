@@ -79,6 +79,25 @@ fn builder_heartbeat_enabled_roundtrip() {
 }
 
 #[test]
+fn builder_accepts_attribute_boundaries_and_alternate_values() {
+    let Some((url, user, pass)) = setup() else {
+        eprintln!("{}", skip_msg());
+        return;
+    };
+    let mut conn = Connection::builder()
+        .packet_size(64 * 1024)
+        .auto_commit(true)
+        .heartbeat_enabled(false)
+        .transaction_isolation(TransactionIsolation::CurrentCommitted)
+        .connect(&url, &user, &pass)
+        .expect("connect should accept lower packet boundary and alternate attributes");
+    assert!(conn.packet_size() >= 64 * 1024);
+    assert!(conn.auto_commit());
+    assert_eq!(conn.transaction_isolation(), TransactionIsolation::CurrentCommitted);
+    let _ = conn.heartbeat_enabled();
+}
+
+#[test]
 fn builder_transaction_isolation_roundtrip() {
     let Some((url, user, pass)) = setup() else {
         eprintln!("{}", skip_msg());

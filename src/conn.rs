@@ -3,6 +3,8 @@
 use crate::error::Error;
 use crate::ffi;
 use crate::library;
+use crate::result_set::ResultSet;
+use crate::stmt::{ExecResult, Statement};
 
 /// A synchronous blocking connection to a YashanDB instance.
 ///
@@ -11,17 +13,6 @@ use crate::library;
 pub struct Connection {
     env: ffi::EnvHandle,
     dbc: ffi::DbcHandle,
-}
-
-/// Transaction isolation level for a session.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum TransactionIsolation {
-    /// Read committed.
-    ReadCommitted,
-    /// Current committed, a YashanDB-specific level.
-    CurrentCommitted,
-    /// Serializable.
-    Serializable,
 }
 
 impl Connection {
@@ -119,6 +110,115 @@ impl Connection {
     pub fn packet_size(&mut self) -> u32 {
         library::loaded_library().get_conn_packet_size(&mut self.dbc)
     }
+
+    #[inline]
+    pub(crate) fn alloc_stmt(&mut self) -> Result<ffi::StmtHandle, Error> {
+        library::loaded_library().alloc_stmt(&mut self.dbc)
+    }
+
+    #[inline]
+    pub(crate) fn charset_ratios(&mut self) -> Result<(u32, u32), Error> {
+        let lib = library::loaded_library();
+        Ok((
+            lib.get_conn_max_charset_ratio(&mut self.dbc)?,
+            lib.get_conn_max_ncharset_ratio(&mut self.dbc)?,
+        ))
+    }
+
+    /// Execute non-parameterized SQL that does not return a result set.
+    ///
+    /// Returns the affected-row count reported by the server. The count for DDL
+    /// and other statements without affected rows is server-defined.
+    #[inline]
+    pub fn execute(&mut self, sql: &str) -> Result<ExecResult, Error> {
+        let mut stmt = Statement::new(self)?;
+        stmt.execute(sql)
+    }
+
+    /// Execute non-parameterized SQL that returns a streaming result set.
+    ///
+    /// The returned result set exclusively borrows this connection until it is
+    /// dropped or [`ResultSet::finish`]ed. Use [`Self::execute`] for SQL that
+    /// does not return rows.
+    #[inline]
+    pub fn query(&mut self, sql: &str) -> Result<ResultSet<'_>, Error> {
+        Statement::new(self)?.query(sql)
+    }
+
+    /// Execute a query that must return exactly one row and map it.
+    ///
+    /// Returns [`Error::RowNotFound`] for zero rows and [`Error::TooManyRows`]
+    /// for more than one row. The mapping function runs after the first row is
+    /// fetched but before the second-row check, so it can run even when this
+    /// method ultimately returns [`Error::TooManyRows`].
+    ///
+    /// The result set is released before this method returns. If query, fetch,
+    /// or mapping fails, that error is returned even when release also fails.
+    /// A release failure is returned only after a successful operation.
+    pub fn query_one_map<T>(
+        &mut self,
+        sql: &str,
+        map: impl FnOnce(&crate::result_set::Row<'_>) -> Result<T, Error>,
+    ) -> Result<T, Error> {
+        let mut rows = self.query(sql)?;
+        let operation = (|| {
+            let row = rows.fetch()?.ok_or(Error::RowNotFound)?;
+            let value = map(&row)?;
+            if rows.fetch()?.is_some() {
+                return Err(Error::TooManyRows);
+            }
+            Ok(value)
+        })();
+        finish_result(operation, rows.finish())
+    }
+
+    /// Execute a query that returns zero or one row and map it.
+    ///
+    /// Returns `Ok(None)` for zero rows and [`Error::TooManyRows`] for more than
+    /// one row. The mapping function runs after the first row is fetched but
+    /// before the second-row check, so it can run even when this method
+    /// ultimately returns [`Error::TooManyRows`].
+    ///
+    /// The result set is released before this method returns. If query, fetch,
+    /// or mapping fails, that error is returned even when release also fails.
+    /// A release failure is returned only after a successful operation.
+    pub fn query_opt_map<T>(
+        &mut self,
+        sql: &str,
+        map: impl FnOnce(&crate::result_set::Row<'_>) -> Result<T, Error>,
+    ) -> Result<Option<T>, Error> {
+        let mut rows = self.query(sql)?;
+        let operation = (|| {
+            let Some(row) = rows.fetch()? else {
+                return Ok(None);
+            };
+            let value = map(&row)?;
+            if rows.fetch()?.is_some() {
+                return Err(Error::TooManyRows);
+            }
+            Ok(Some(value))
+        })();
+        finish_result(operation, rows.finish())
+    }
+}
+
+#[inline]
+fn finish_result<T>(operation: Result<T, Error>, finish: Result<(), Error>) -> Result<T, Error> {
+    match operation {
+        Ok(value) => finish.map(|()| value),
+        Err(error) => Err(error),
+    }
+}
+
+/// Transaction isolation level for a session.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TransactionIsolation {
+    /// Read committed.
+    ReadCommitted,
+    /// Current committed, a YashanDB-specific level.
+    CurrentCommitted,
+    /// Serializable.
+    Serializable,
 }
 
 /// Builder for [`Connection`], allowing connection attributes to be set before
@@ -342,6 +442,10 @@ mod tests {
     use super::*;
     use crate::ffi::YacTxnIsolation;
 
+    fn internal_error(message: &str) -> Error {
+        Error::Internal(message.to_owned())
+    }
+
     #[test]
     fn txn_isolation_conversion_roundtrip() {
         for (rust, raw) in [
@@ -362,5 +466,25 @@ mod tests {
             };
             assert_eq!(rust_from_raw, rust);
         }
+    }
+
+    #[test]
+    fn finish_result_returns_value_when_operation_and_release_succeed() {
+        assert!(matches!(finish_result(Ok(42), Ok(())), Ok(42)));
+    }
+
+    #[test]
+    fn finish_result_returns_release_error_after_successful_operation() {
+        let result = finish_result(Ok(()), Err(internal_error("release failed")));
+        assert!(matches!(result, Err(Error::Internal(message)) if message == "release failed"));
+    }
+
+    #[test]
+    fn finish_result_preserves_operation_error_when_release_also_fails() {
+        let result = finish_result::<()>(
+            Err(internal_error("query failed")),
+            Err(internal_error("release failed")),
+        );
+        assert!(matches!(result, Err(Error::Internal(message)) if message == "query failed"));
     }
 }

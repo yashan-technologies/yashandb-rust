@@ -9,6 +9,8 @@ synchronous, blocking connection to a YashanDB instance.
   management.
 - **Automatic client library loading** — the YashanDB client library is loaded
   on first use, with optional explicit-path loading.
+- **Non-parameterized SQL execution and streaming queries** with typed result
+  rows and column metadata.
 
 ## MSRV
 
@@ -44,27 +46,73 @@ Connect to a database:
 use yashandb::Connection;
 
 fn main() -> Result<(), yashandb::Error> {
-    let conn = Connection::connect("127.0.0.1:1688", "yashan", "yashan")?;
-    // ... use the connection ...
+    let mut conn = Connection::connect("127.0.0.1:1688", "yashan", "yashan")?;
+    let answer = conn.query_one_map("select 42 from dual", |row| row.get::<i32>(0))?;
+    assert_eq!(answer, 42);
     Ok(())
 }
 ```
 
 The client library is loaded automatically on first use. To fail fast at
-startup, or to load it from a specific location, call `load_library` first:
+startup, call `load_library` first:
 
 ```rust
-use yashandb::{load_library, load_library_with_path, Connection};
+use yashandb::{load_library, Connection};
 
 // Auto-discovery: default search path, then the per-user install directory.
-load_library()?;
+fn main() -> Result<(), yashandb::Error> {
+    load_library()?;
 
-// Or an explicit path.
-load_library_with_path("/opt/yashandb/client/lib/yascli.so")?;
-
-let conn = Connection::connect("127.0.0.1:1688", "yashan", "yashan")?;
-// ...
+    let conn = Connection::connect("127.0.0.1:1688", "yashan", "yashan")?;
+    // ...
+    # let _ = conn;
+    Ok(())
+}
 ```
+
+To load a client library from a specific path instead, use only
+`load_library_with_path` before connecting:
+
+```rust
+use yashandb::{load_library_with_path, Connection};
+
+fn main() -> Result<(), yashandb::Error> {
+    load_library_with_path("/opt/yashandb/client/lib/yascli.so")?;
+    let conn = Connection::connect("127.0.0.1:1688", "yashan", "yashan")?;
+    // ...
+    # let _ = conn;
+    Ok(())
+}
+```
+
+### Executing SQL and reading rows
+
+`execute` is for non-parameterized SQL that does not return rows. `query`
+returns a streaming `ResultSet`; it exclusively borrows the connection until
+the result set is dropped or `finish`ed.
+
+```rust
+# use yashandb::{Connection, Error};
+# fn example(conn: &mut Connection) -> Result<(), Error> {
+conn.execute("create table users (id integer, name varchar(64))")?;
+
+let mut rows = conn.query("select id, name from users")?;
+while let Some(row) = rows.fetch()? {
+    let id: i32 = row.get(0)?;
+    let name: Option<String> = row.get("NAME")?;
+    # let _ = (id, name);
+}
+rows.finish()?; // Optional, but reports a native release failure.
+# Ok(())
+# }
+```
+
+`Row::get` accepts a zero-based `usize` index or exact database-reported column
+name. Supported SQL values include booleans, signed integer and floating-point
+types, `NUMBER`, date/time and interval types, text, and binary data. Wrap a
+target in `Option<T>` to read a database `NULL`. `TIMESTAMP WITH [LOCAL] TIME
+ZONE` and unrecognized types remain visible in metadata but return an error only
+if that column is read.
 
 ### Connection URL formats
 

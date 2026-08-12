@@ -14,8 +14,18 @@ use std::ffi::c_void;
 // --- C type aliases ---
 
 pub type YacHandle = *mut c_void;
+pub type YacInt8 = i8;
 pub type YacInt16 = i16;
 pub type YacInt32 = i32;
+pub type YacInt64 = i64;
+pub type YacUint8 = u8;
+pub type YacUint16 = u16;
+pub type YacUint32 = u32;
+pub type YacUint64 = u64;
+pub type YacDate = i64;
+pub type YacShortTime = i64;
+pub type YacYMInterval = i32;
+pub type YacDSInterval = i64;
 
 // --- C enums ---
 
@@ -33,6 +43,108 @@ pub enum YacHandleType {
     Unknown = 0,
     Env = 1,
     Dbc = 2,
+    Stmt = 3,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum YacType {
+    Unknown = 0,
+    Bool = 1,
+    TinyInt = 2,
+    SmallInt = 3,
+    Integer = 4,
+    BigInt = 5,
+    UTinyInt = 6,
+    USmallInt = 7,
+    UInteger = 8,
+    UBigInt = 9,
+    Float = 10,
+    Double = 11,
+    Number = 12,
+    Date = 13,
+    ShortTime = 15,
+    Timestamp = 16,
+    TimestampLtz = 17,
+    TimestampTz = 18,
+    YmInterval = 19,
+    DsInterval = 20,
+    Char = 24,
+    NChar = 25,
+    VarChar = 26,
+    NVarChar = 27,
+    Binary = 28,
+    Clob = 29,
+    Blob = 30,
+    Bit = 31,
+    RowId = 32,
+    NClob = 33,
+    Cursor = 34,
+    Json = 35,
+    Xml = 39,
+    NumericFloat = 40,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum YacExtType {
+    Unknown = 0,
+    Bool = 1,
+    TinyInt = 2,
+    SmallInt = 3,
+    Integer = 4,
+    BigInt = 5,
+    Float = 10,
+    Double = 11,
+    Number = 12,
+    Date = 13,
+    ShortTime = 15,
+    Timestamp = 16,
+    YmInterval = 19,
+    DsInterval = 20,
+    Char = 24,
+    VarChar = 26,
+    Binary = 28,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(i32)]
+pub enum YacStmtAttr {
+    RowsetSize = 101,
+    RowsAffected = 103,
+    CursorEof = 104,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(i32)]
+pub enum YacColAttr {
+    Name = 1,
+    Size = 2,
+    Type = 3,
+    Precision = 4,
+    Scale = 5,
+    Nullable = 6,
+    CharSize = 7,
+}
+
+pub const YAC_NULL_DATA: YacInt32 = -1;
+
+#[derive(Clone, Copy)]
+#[repr(C, packed(4))]
+pub struct YacNumber {
+    pub number_part: [u8; 20],
+}
+
+#[derive(Clone, Copy)]
+#[repr(C, packed(4))]
+pub struct YacTimestamp {
+    pub timestamp_part: [u8; 12],
+}
+
+#[derive(Clone, Copy)]
+#[repr(C, packed(4))]
+pub struct YacRowId {
+    pub row_id_part: [u8; 16],
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -98,22 +210,22 @@ pub type YacAllocHandle =
 pub type YacFreeHandle = unsafe extern "C" fn(handle_type: YacHandleType, handle: YacHandle) -> YacResult;
 
 pub type YacConnect = unsafe extern "C" fn(
-    hconn: YacHandle,
+    h_conn: YacHandle,
     url: *const u8,
     url_len: YacInt16,
-    username: *const u8,
-    username_len: YacInt16,
-    password: *const u8,
-    password_len: YacInt16,
+    user: *const u8,
+    user_len: YacInt16,
+    pwd: *const u8,
+    pwd_len: YacInt16,
 ) -> YacResult;
 
-pub type YacDisconnect = unsafe extern "C" fn(hconn: YacHandle);
+pub type YacDisconnect = unsafe extern "C" fn(h_conn: YacHandle);
 
 pub type YacSetEnvAttr =
-    unsafe extern "C" fn(henv: YacHandle, attr: YacEnvAttr, value: *mut c_void, length: YacInt32) -> YacResult;
+    unsafe extern "C" fn(h_env: YacHandle, attr: YacEnvAttr, value: *mut c_void, length: YacInt32) -> YacResult;
 
 pub type YacGetEnvAttr = unsafe extern "C" fn(
-    henv: YacHandle,
+    h_env: YacHandle,
     attr: YacEnvAttr,
     value: *mut c_void,
     buf_len: YacInt32,
@@ -121,10 +233,10 @@ pub type YacGetEnvAttr = unsafe extern "C" fn(
 ) -> YacResult;
 
 pub type YacSetConnAttr =
-    unsafe extern "C" fn(hconn: YacHandle, attr: YacConnAttr, value: *mut c_void, length: YacInt32) -> YacResult;
+    unsafe extern "C" fn(h_conn: YacHandle, attr: YacConnAttr, value: *mut c_void, length: YacInt32) -> YacResult;
 
 pub type YacGetConnAttr = unsafe extern "C" fn(
-    hconn: YacHandle,
+    h_conn: YacHandle,
     attr: YacConnAttr,
     value: *mut c_void,
     buf_len: YacInt32,
@@ -137,8 +249,43 @@ pub type YacGetDiagRec = unsafe extern "C" fn(
     buf_len: YacInt32,
     indicator: *mut YacInt32,
     sql_state: *mut u8,
-    sql_state_len: YacInt32,
+    sql_state_buf_len: YacInt32,
     pos: *mut YacTextPos,
+) -> YacResult;
+
+pub type YacDirectExecute = unsafe extern "C" fn(h_stmt: YacHandle, sql: *const u8, sql_length: YacInt32) -> YacResult;
+
+pub type YacFetch = unsafe extern "C" fn(h_stmt: YacHandle, rows: *mut YacUint32) -> YacResult;
+
+pub type YacSetStmtAttr =
+    unsafe extern "C" fn(h_stmt: YacHandle, attr: YacStmtAttr, value: *mut c_void, length: YacInt32) -> YacResult;
+
+pub type YacGetStmtAttr = unsafe extern "C" fn(
+    h_stmt: YacHandle,
+    attr: YacStmtAttr,
+    value: *mut c_void,
+    buf_len: YacInt32,
+    string_length: *mut YacInt32,
+) -> YacResult;
+
+pub type YacBindColumn = unsafe extern "C" fn(
+    h_stmt: YacHandle,
+    id: YacUint16,
+    ext_type: YacUint32,
+    value: *mut c_void,
+    buf_len: YacInt32,
+    indicator: *mut YacInt32,
+) -> YacResult;
+
+pub type YacNumResultCols = unsafe extern "C" fn(h_stmt: YacHandle, count: *mut YacInt16) -> YacResult;
+
+pub type YacColAttribute = unsafe extern "C" fn(
+    h_stmt: YacHandle,
+    id: YacUint16,
+    attr: YacColAttr,
+    value: *mut c_void,
+    buf_len: YacInt32,
+    string_length: *mut YacInt32,
 ) -> YacResult;
 
 #[cfg(test)]

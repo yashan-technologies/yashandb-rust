@@ -4,6 +4,7 @@ mod attr;
 mod conn;
 mod diag;
 mod raw;
+mod stmt;
 
 use std::ffi::CStr;
 use std::path::Path;
@@ -15,7 +16,10 @@ use crate::load::{Loaded, MAIN_LIB_NAME};
 use raw::*;
 
 pub use conn::{DbcHandle, EnvHandle};
-pub use raw::{YacCharsetCode, YacTxnIsolation};
+pub use raw::{YacCharsetCode, YacExtType, YacTxnIsolation, YacType};
+pub use stmt::StmtHandle;
+
+pub const NULL_DATA: i32 = -1;
 
 /// Loaded yascli shared library and resolved function pointers.
 pub struct YacLib {
@@ -32,6 +36,12 @@ pub struct YacLib {
     set_conn_attr: YacSetConnAttr,
     get_conn_attr: YacGetConnAttr,
     get_diag_rec: YacGetDiagRec,
+    direct_execute: YacDirectExecute,
+    fetch: YacFetch,
+    get_stmt_attr: YacGetStmtAttr,
+    bind_column: YacBindColumn,
+    num_result_cols: YacNumResultCols,
+    col_attribute: YacColAttribute,
 }
 
 impl YacLib {
@@ -47,6 +57,12 @@ impl YacLib {
         let set_conn_attr = try_load_symbol(&loaded.lib, c"yacSetConnAttr")?;
         let get_conn_attr = try_load_symbol(&loaded.lib, c"yacGetConnAttr")?;
         let get_diag_rec = try_load_symbol(&loaded.lib, c"yacGetDiagRec")?;
+        let direct_execute = try_load_symbol(&loaded.lib, c"yacDirectExecute")?;
+        let fetch = try_load_symbol(&loaded.lib, c"yacFetch")?;
+        let get_stmt_attr = try_load_symbol(&loaded.lib, c"yacGetStmtAttr")?;
+        let bind_column = try_load_symbol(&loaded.lib, c"yacBindColumn")?;
+        let num_result_cols = try_load_symbol(&loaded.lib, c"yacNumResultCols")?;
+        let col_attribute = try_load_symbol(&loaded.lib, c"yacColAttribute")?;
 
         Ok(Self {
             loaded,
@@ -59,6 +75,12 @@ impl YacLib {
             set_conn_attr,
             get_conn_attr,
             get_diag_rec,
+            direct_execute,
+            fetch,
+            get_stmt_attr,
+            bind_column,
+            num_result_cols,
+            col_attribute,
         })
     }
 

@@ -12,3 +12,5 @@ categories = ["database", "database-implementations"]
 
 [dependencies]
 libloading = "0.8"
+decimal-rs = "0.2.0"
+sqldatetime = { version = "0.3.0", features = ["oracle"] }

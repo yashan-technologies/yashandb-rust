@@ -266,4 +266,16 @@ impl YacLib {
         self.get_conn_attr_u32(dbc, YacConnAttr::PacketSize)
             .expect("yacGetConnAttr(YAC_ATTR_PACKET_SIZE) failed")
     }
+
+    /// Get the maximum bytes per database character for the current connection.
+    #[inline]
+    pub fn get_conn_max_charset_ratio(&self, dbc: &mut DbcHandle) -> Result<u32, Error> {
+        self.get_conn_attr_u32(dbc, YacConnAttr::MaxCharsetRatio)
+    }
+
+    /// Get the maximum bytes per national character for the current connection.
+    #[inline]
+    pub fn get_conn_max_ncharset_ratio(&self, dbc: &mut DbcHandle) -> Result<u32, Error> {
+        self.get_conn_attr_u32(dbc, YacConnAttr::MaxNcharsetRatio)
+    }
 }

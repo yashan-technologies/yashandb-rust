@@ -23,6 +23,12 @@
 - `src/library.rs` owns the process-global `YAC_LIB` singleton. First load wins: a different explicit path returns `Error::ClientLibrary`; failed loads leave the singleton unset for retry. `Connection::connect` must keep its lazy auto-load behavior.
 - `Connection` is `Send` but not `Sync`; FFI handle methods intentionally take `&mut` even for reads to enforce exclusive access.
 - `YacResult::Success` and `SuccessWithInfo` are successful. Other results are converted through diagnostics into `Error::Database`.
+- Keep `ffi` as the thin C ABI/dynamic-call layer. Native handles such as `StmtHandle` must not escape into `Connection`, `ResultSet`, or other safe-layer modules.
+- `Statement<'conn>` is the safe statement owner: it directly owns its `StmtHandle`, exclusively borrows its `Connection`, and releases the native statement through RAII. `Connection` and `ResultSet` must use `Statement` methods rather than calling statement FFI methods or touching `StmtHandle` directly.
+- `Statement::finish(self)` must propagate a native release failure and avoid a subsequent double free from `Drop`. Do not use `Option<StmtHandle>` solely to model normal statement ownership.
+- Keep C-shaped names such as `direct_execute` in `ffi`; the safe statement API exposes operation-level methods such as `execute` and `query`. `Connection::execute` and `Connection::query` should only create a `Statement` and delegate.
+- The client default statement rowset size is one. Do not explicitly set it to one; `ResultSet::fetch` interprets fetch counts as `0` for EOF and `1` for one row, treating any other count as an error.
+- Place public database type and column metadata definitions in `src/types.rs`. `ColumnInfo` stores only its name, `DataTypeInfo`, and nullability; type-specific metadata must be represented by `DataTypeInfo` variants rather than broadly accessible optional fields.
 
 ## Constraints
 
@@ -30,6 +36,9 @@
 - Connection parameters are passed with `i16` byte lengths; `conn_param_len` rejects oversized strings with `Error::InvalidArgument`.
 - `Error` is `#[non_exhaustive]`; external matches must include a wildcard.
 - `src/lib.rs` enables `#![warn(missing_docs)]`; document every new public item.
+- Do not suppress `missing_docs`, dead-code, or other warnings outside the raw ABI mapping. Add the required documentation or remove obsolete code instead.
+- For small forwarding methods and simple accessors, use `#[inline]`. Use `const fn` for simple public accessors when the operation is valid in const contexts, and combine it with `#[inline]`.
+- When adding crate-internal helper methods to an existing `impl`, append them at the end of that `impl` unless their placement is required by a more specific local convention.
 
 ## Test Concurrency
 
