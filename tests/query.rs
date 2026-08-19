@@ -143,10 +143,21 @@ fn query_all_supported_scalar_types() {
     assert_eq!(row.get::<i64>(4).unwrap(), -64);
     assert_eq!(row.get::<f32>(5).unwrap(), 1.5);
     assert_eq!(row.get::<f64>(6).unwrap(), 2.5);
+    let character_types = [
+        row.columns()[7].data_type_info(),
+        row.columns()[8].data_type_info(),
+        row.columns()[9].data_type_info(),
+        row.columns()[10].data_type_info(),
+    ];
+    assert!(matches!(character_types[0], DataTypeInfo::Char { char_size: 8, size } if size >= 8));
+    assert!(matches!(character_types[1], DataTypeInfo::NChar { char_size: 8, size } if size >= 8));
+    assert!(matches!(character_types[2], DataTypeInfo::VarChar { char_size: 8, size } if size >= 8));
+    assert!(matches!(character_types[3], DataTypeInfo::NVarChar { char_size: 8, size } if size >= 8));
     assert_eq!(row.get::<String>(7).unwrap().trim(), "text");
     assert_eq!(row.get::<&str>(8).unwrap().trim(), "ntext");
     assert_eq!(row.get::<Option<String>>(9).unwrap().as_deref(), Some("vtext"));
     assert_eq!(row.get::<Option<&str>>(10).unwrap().map(str::trim), Some("nvtext"));
+    assert!(matches!(row.columns()[11].data_type_info(), DataTypeInfo::Binary { size } if size >= 2));
     assert_eq!(row.get::<Vec<u8>>(11).unwrap(), [0xca, 0xfe]);
     assert_eq!(row.get::<&[u8]>(11).unwrap(), [0xca, 0xfe]);
     assert!(rows.fetch().unwrap().is_none());

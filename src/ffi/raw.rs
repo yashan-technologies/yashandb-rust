@@ -86,6 +86,14 @@ pub enum YacType {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(i32)]
+pub enum YacParamDirection {
+    Input = 1,
+    Output = 2,
+    InOut = 3,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u32)]
 pub enum YacExtType {
     Unknown = 0,
@@ -105,6 +113,9 @@ pub enum YacExtType {
     Char = 24,
     VarChar = 26,
     Binary = 28,
+    Char2 = 100,
+    Varchar2 = 101,
+    Binary2 = 102,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -255,6 +266,34 @@ pub type YacGetDiagRec = unsafe extern "C" fn(
 
 pub type YacDirectExecute = unsafe extern "C" fn(h_stmt: YacHandle, sql: *const u8, sql_length: YacInt32) -> YacResult;
 
+pub type YacPrepare = unsafe extern "C" fn(h_stmt: YacHandle, sql: *const u8, sql_length: YacInt32) -> YacResult;
+
+pub type YacExecute = unsafe extern "C" fn(h_stmt: YacHandle) -> YacResult;
+
+pub type YacBindParameter = unsafe extern "C" fn(
+    h_stmt: YacHandle,
+    id: YacUint16,
+    direction: YacParamDirection,
+    ext_type: YacUint32,
+    value: *mut c_void,
+    bind_size: YacInt32,
+    buf_length: YacInt32,
+    indicator: *mut YacInt32,
+) -> YacResult;
+
+pub type YacBindParameterByName = unsafe extern "C" fn(
+    h_stmt: YacHandle,
+    name: *mut u8,
+    direction: YacParamDirection,
+    ext_type: YacUint32,
+    value: *mut c_void,
+    bind_size: YacInt32,
+    buf_length: YacInt32,
+    indicator: *mut YacInt32,
+) -> YacResult;
+
+pub type YacNumParams = unsafe extern "C" fn(h_stmt: YacHandle, count: *mut YacUint16) -> YacResult;
+
 pub type YacFetch = unsafe extern "C" fn(h_stmt: YacHandle, rows: *mut YacUint32) -> YacResult;
 
 pub type YacSetStmtAttr =
@@ -304,6 +343,13 @@ mod tests {
         assert_eq!(YacHandleType::Unknown as i32, 0);
         assert_eq!(YacHandleType::Env as i32, 1);
         assert_eq!(YacHandleType::Dbc as i32, 2);
+    }
+
+    #[test]
+    fn param_direction_repr() {
+        assert_eq!(YacParamDirection::Input as i32, 1);
+        assert_eq!(YacParamDirection::Output as i32, 2);
+        assert_eq!(YacParamDirection::InOut as i32, 3);
     }
 
     #[test]

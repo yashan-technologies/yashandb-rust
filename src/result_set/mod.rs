@@ -1,40 +1,97 @@
 //! Result sets, metadata, rows, and strict column decoding.
 
+mod binding;
+mod convert;
+mod index;
+
 use std::mem::MaybeUninit;
 
+use crate::column::{ColumnInfo, DataTypeInfo};
 use crate::error::Error;
 use crate::ffi::{NULL_DATA, YacExtType};
 use crate::stmt::Statement;
-use crate::types::private::ColumnIndex;
-use crate::types::{
-    ColumnBinding, ColumnInfo, DataTypeInfo, Date, IntervalDS, IntervalYM, Number, Time, Timestamp, YacNumber,
-    YacTimestamp,
-};
+use crate::types::{Date, IntervalDS, IntervalYM, Number, Time, Timestamp, YacNumber, YacTimestamp};
+
+use self::binding::ColumnBinding;
 
 /// A single-row, streaming result set that exclusively borrows its connection.
 ///
 /// The connection cannot perform another operation until this result set is
-/// dropped or [`Self::finish`]ed. Drop releases the native statement; call
-/// [`Self::finish`] when an explicit release error must be observed.
-pub struct ResultSet<'conn> {
-    stmt: Statement<'conn>,
+/// dropped or [`Self::finish`]ed. For a connection query, cleanup releases its
+/// temporary native statement. For a prepared statement query, cleanup ends the
+/// current result stream and makes the statement reusable. Call [`Self::finish`]
+/// when an explicit cleanup error must be observed.
+pub struct ResultSet<'conn, 'stmt> {
+    statement: StatementAccess<'conn, 'stmt>,
     schema: Vec<ColumnInfo>,
     columns: Vec<ColumnBuffer>,
     eof: bool,
 }
 
-impl<'conn> ResultSet<'conn> {
+enum StatementAccess<'conn, 'stmt> {
+    Owned(Statement<'conn>),
+    Borrowed(&'stmt mut Statement<'conn>),
+    None,
+}
+
+impl<'conn, 'stmt> StatementAccess<'conn, 'stmt> {
+    #[inline]
+    fn take(&mut self) -> Self {
+        std::mem::replace(self, Self::None)
+    }
+}
+
+impl<'conn> ResultSet<'conn, 'conn> {
     #[inline]
     pub(crate) fn from_stmt(mut stmt: Statement<'conn>) -> Result<Self, Error> {
         let schema = stmt.schema()?;
         let columns = bind_columns(&mut stmt, &schema)?;
 
         Ok(Self {
-            stmt,
+            statement: StatementAccess::Owned(stmt),
             schema,
             columns,
             eof: false,
         })
+    }
+}
+
+impl<'conn, 'stmt> ResultSet<'conn, 'stmt>
+where
+    'conn: 'stmt,
+{
+    #[inline]
+    pub(crate) fn from_borrowed(stmt: &'stmt mut Statement<'conn>) -> Result<ResultSet<'conn, 'stmt>, Error> {
+        let schema = match stmt.schema() {
+            Ok(schema) => schema,
+            Err(error) => {
+                let _ = stmt.finish_result();
+                return Err(error);
+            }
+        };
+        let columns = match bind_columns(stmt, &schema) {
+            Ok(columns) => columns,
+            Err(error) => {
+                let _ = stmt.finish_result();
+                return Err(error);
+            }
+        };
+
+        Ok(ResultSet {
+            statement: StatementAccess::Borrowed(stmt),
+            schema,
+            columns,
+            eof: false,
+        })
+    }
+
+    #[inline]
+    fn statement(&mut self) -> &mut Statement<'conn> {
+        match &mut self.statement {
+            StatementAccess::Owned(stmt) => stmt,
+            StatementAccess::Borrowed(stmt) => stmt,
+            StatementAccess::None => unreachable!("result set statement has already been taken"),
+        }
     }
 
     /// Metadata for all result columns.
@@ -54,7 +111,7 @@ impl<'conn> ResultSet<'conn> {
         if self.eof {
             return Ok(None);
         }
-        match self.stmt.fetch()? {
+        match self.statement().fetch()? {
             0 => {
                 self.eof = true;
                 Ok(None)
@@ -69,13 +126,28 @@ impl<'conn> ResultSet<'conn> {
         }
     }
 
-    /// Release the native statement and propagate a release error.
+    /// Finish the result stream and propagate a cleanup error.
     ///
-    /// This is optional for normal cleanup because [`Drop`] releases the native
-    /// statement best-effort. Use this method when the release error matters.
+    /// This is optional for normal cleanup because [`Drop`] performs best-effort
+    /// cleanup. For a query created by [`crate::Statement`], this leaves the
+    /// prepared statement ready for reuse.
     #[inline]
-    pub fn finish(self) -> Result<(), Error> {
-        self.stmt.finish()
+    pub fn finish(mut self) -> Result<(), Error> {
+        let statement = self.statement.take();
+        match statement {
+            StatementAccess::Owned(stmt) => stmt.finish(),
+            StatementAccess::Borrowed(stmt) => stmt.finish_result(),
+            StatementAccess::None => Ok(()),
+        }
+    }
+}
+
+impl Drop for ResultSet<'_, '_> {
+    #[inline]
+    fn drop(&mut self) {
+        if let StatementAccess::Borrowed(stmt) = &mut self.statement {
+            let _ = stmt.finish_result();
+        }
     }
 }
 
@@ -209,7 +281,7 @@ fn bind_columns(stmt: &mut Statement<'_>, schema: &[ColumnInfo]) -> Result<Vec<C
                 let column = push_column(&mut columns, ColumnBinding::Text(text_buffer(size, ratio)));
                 stmt.bind_column(
                     index as u16,
-                    YacExtType::Char,
+                    YacExtType::Char2,
                     column.binding.text_buffer(),
                     &mut column.indicator,
                 )?;
@@ -218,7 +290,7 @@ fn bind_columns(stmt: &mut Statement<'_>, schema: &[ColumnInfo]) -> Result<Vec<C
                 let column = push_column(&mut columns, ColumnBinding::Text(text_buffer(size, nratio)));
                 stmt.bind_column(
                     index as u16,
-                    YacExtType::Char,
+                    YacExtType::Char2,
                     column.binding.text_buffer(),
                     &mut column.indicator,
                 )?;
@@ -227,7 +299,7 @@ fn bind_columns(stmt: &mut Statement<'_>, schema: &[ColumnInfo]) -> Result<Vec<C
                 let column = push_column(&mut columns, ColumnBinding::Text(text_buffer(size, ratio)));
                 stmt.bind_column(
                     index as u16,
-                    YacExtType::VarChar,
+                    YacExtType::Varchar2,
                     column.binding.text_buffer(),
                     &mut column.indicator,
                 )?;
@@ -236,7 +308,7 @@ fn bind_columns(stmt: &mut Statement<'_>, schema: &[ColumnInfo]) -> Result<Vec<C
                 let column = push_column(&mut columns, ColumnBinding::Text(text_buffer(size, nratio)));
                 stmt.bind_column(
                     index as u16,
-                    YacExtType::VarChar,
+                    YacExtType::Varchar2,
                     column.binding.text_buffer(),
                     &mut column.indicator,
                 )?;
@@ -245,7 +317,7 @@ fn bind_columns(stmt: &mut Statement<'_>, schema: &[ColumnInfo]) -> Result<Vec<C
                 let column = push_column(&mut columns, ColumnBinding::Binary(variable_buffer(size as usize)));
                 stmt.bind_column(
                     index as u16,
-                    YacExtType::Binary,
+                    YacExtType::Binary2,
                     column.binding.binary_buffer(),
                     &mut column.indicator,
                 )?;
@@ -580,7 +652,7 @@ impl<'row> Row<'row> {
     /// # }
     /// ```
     #[inline]
-    pub fn get<T: private::FromColumn<'row>>(&self, index: impl ColumnIndex) -> Result<T, Error> {
+    pub fn get<T: convert::FromColumn<'row>>(&self, index: impl index::ColumnIndex) -> Result<T, Error> {
         let column = self.column(index.index(self.schema)?)?;
         T::from_column(&column)
     }
@@ -608,80 +680,4 @@ impl<'row> Row<'row> {
             buffer: column,
         })
     }
-}
-
-pub(super) mod private {
-    use super::*;
-
-    pub trait FromColumn<'row>: Sized {
-        fn from_column(column: &Column<'row>) -> Result<Self, Error>;
-    }
-
-    macro_rules! impl_from_column {
-        ($t:ty, $name:literal, $kind:pat, $read:ident) => {
-            impl<'row> FromColumn<'row> for $t {
-                #[inline]
-                fn from_column(c: &Column<'row>) -> Result<Self, Error> {
-                    c.read($name, |actual| matches!(actual, $kind), |buffer| buffer.$read())
-                }
-            }
-            impl<'row> FromColumn<'row> for Option<$t> {
-                #[inline]
-                fn from_column(c: &Column<'row>) -> Result<Self, Error> {
-                    c.read_optional($name, |actual| matches!(actual, $kind), |buffer| buffer.$read())
-                }
-            }
-        };
-        (borrow $t:ty, $name:literal, $kind:pat, $read:ident) => {
-            impl<'row> FromColumn<'row> for &'row $t {
-                #[inline]
-                fn from_column(c: &Column<'row>) -> Result<Self, Error> {
-                    c.read($name, |actual| matches!(actual, $kind), |buffer| buffer.$read())
-                }
-            }
-            impl<'row> FromColumn<'row> for Option<&'row $t> {
-                #[inline]
-                fn from_column(c: &Column<'row>) -> Result<Self, Error> {
-                    c.read_optional($name, |actual| matches!(actual, $kind), |buffer| buffer.$read())
-                }
-            }
-        };
-    }
-
-    impl_from_column!(bool, "bool", DataTypeInfo::Bool, as_bool);
-
-    impl_from_column!(i8, "i8", DataTypeInfo::TinyInt, as_i8);
-    impl_from_column!(i16, "i16", DataTypeInfo::SmallInt, as_i16);
-    impl_from_column!(i32, "i32", DataTypeInfo::Integer, as_i32);
-    impl_from_column!(i64, "i64", DataTypeInfo::BigInt, as_i64);
-    impl_from_column!(f32, "f32", DataTypeInfo::Float, as_f32);
-    impl_from_column!(f64, "f64", DataTypeInfo::Double, as_f64);
-    impl_from_column!(Number, "Number", DataTypeInfo::Number { .. }, as_number);
-
-    impl_from_column!(Date, "Date", DataTypeInfo::Date, as_date);
-    impl_from_column!(Time, "Time", DataTypeInfo::Time, as_time);
-    impl_from_column!(Timestamp, "Timestamp", DataTypeInfo::Timestamp, as_timestamp);
-    impl_from_column!(IntervalYM, "IntervalYM", DataTypeInfo::IntervalYM, as_interval_ym);
-    impl_from_column!(IntervalDS, "IntervalDS", DataTypeInfo::IntervalDS, as_interval_ds);
-
-    impl_from_column!(
-        borrow str,
-        "&str",
-        DataTypeInfo::Char { .. }
-            | DataTypeInfo::VarChar { .. }
-            | DataTypeInfo::NChar { .. }
-            | DataTypeInfo::NVarChar { .. },
-        as_text
-    );
-    impl_from_column!(
-        String,
-        "String",
-        DataTypeInfo::Char { .. }
-            | DataTypeInfo::VarChar { .. }
-            | DataTypeInfo::NChar { .. }
-            | DataTypeInfo::NVarChar { .. },
-        as_string
-    );
-    impl_from_column!(borrow[u8], "&[u8]", DataTypeInfo::Binary { .. }, as_binary);
-    impl_from_column!(Vec<u8>, "Vec<u8>", DataTypeInfo::Binary { .. }, as_vec);
 }

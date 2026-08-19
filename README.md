@@ -11,6 +11,8 @@ synchronous, blocking connection to a YashanDB instance.
   on first use, with optional explicit-path loading.
 - **Non-parameterized SQL execution and streaming queries** with typed result
   rows and column metadata.
+- **Prepared statements and parameter binding** for positional and named
+  parameters, including input, output, and input/output values.
 
 ## MSRV
 
@@ -85,11 +87,11 @@ fn main() -> Result<(), yashandb::Error> {
 }
 ```
 
-### Executing SQL and reading rows
+### Interface usage
 
-`execute` is for non-parameterized SQL that does not return rows. `query`
-returns a streaming `ResultSet`; it exclusively borrows the connection until
-the result set is dropped or `finish`ed.
+Use `execute` for SQL without parameters that does not return rows, and `query`
+for a streaming `ResultSet`. The result set exclusively borrows the connection
+until it is dropped or `finish`ed.
 
 ```rust
 # use yashandb::{Connection, Error};
@@ -108,11 +110,152 @@ rows.finish()?; // Optional, but reports a native release failure.
 ```
 
 `Row::get` accepts a zero-based `usize` index or exact database-reported column
-name. Supported SQL values include booleans, signed integer and floating-point
-types, `NUMBER`, date/time and interval types, text, and binary data. Wrap a
-target in `Option<T>` to read a database `NULL`. `TIMESTAMP WITH [LOCAL] TIME
-ZONE` and unrecognized types remain visible in metadata but return an error only
-if that column is read.
+name. Wrap a target in `Option<T>` to read a database `NULL`. The supported
+query result mapping is:
+
+| SQL type | Rust type |
+|---|---|
+| `BOOL` | `bool` / `Option<bool>` |
+| `TINYINT` | `i8` / `Option<i8>` |
+| `SMALLINT` | `i16` / `Option<i16>` |
+| `INTEGER` | `i32` / `Option<i32>` |
+| `BIGINT` | `i64` / `Option<i64>` |
+| `FLOAT` | `f32` / `Option<f32>` |
+| `DOUBLE` | `f64` / `Option<f64>` |
+| `NUMBER` | `Number` / `Option<Number>` |
+| `DATE` | `Date` / `Option<Date>` |
+| `SHORTTIME` | `Time` / `Option<Time>` |
+| `TIMESTAMP` | `Timestamp` / `Option<Timestamp>` |
+| `INTERVAL YEAR TO MONTH` | `IntervalYM` / `Option<IntervalYM>` |
+| `INTERVAL DAY TO SECOND` | `IntervalDS` / `Option<IntervalDS>` |
+| `CHAR`, `NCHAR`, `VARCHAR`, `NVARCHAR` | `String`, `&str`, or their `Option<T>` forms |
+| `BINARY` | `Vec<u8>`, `&[u8]`, or their `Option<T>` forms |
+
+`TIMESTAMP WITH [LOCAL] TIME ZONE` and unrecognized types remain visible in
+metadata but return an error only if that column is read.
+
+Use `execute_with` and `query_with` for parameterized SQL that is executed once.
+Construct values with `input`, `output`, and `in_out`.
+
+```rust
+use yashandb::{Connection, Error, input};
+
+fn insert_user(conn: &mut Connection, id: i64, name: &str) -> Result<(), Error> {
+    conn.execute_with(
+        "insert into users(id, name) values (?, ?)",
+        [input(id), input(name)],
+    )?;
+    Ok(())
+}
+```
+
+For repeated execution, use `prepare` and call `Statement::execute` or
+`Statement::query` on the returned statement:
+
+```rust
+use yashandb::{Connection, Error, input};
+
+fn insert_users(conn: &mut Connection, users: &[(i64, &str)]) -> Result<(), Error> {
+    let mut stmt = conn.prepare("insert into users(id, name) values (?, ?)")?;
+    for &(id, name) in users {
+        stmt.execute([input(id), input(name)])?;
+    }
+    Ok(())
+}
+```
+
+Parameter lists are passed as arrays, slices, or `Vec<BindParam>` values.
+
+`Option<T>` input values bind SQL `NULL`. Use a type annotation when the type
+cannot be inferred, for example `input(Option::<i64>::None)`.
+
+The supported parameter mappings are:
+
+| Rust type | YashanDB/YACLI type |
+|---|---|
+| `bool` | `BOOL` |
+| `i8` | `TINYINT` |
+| `i16` | `SMALLINT` |
+| `i32` | `INTEGER` |
+| `i64` | `BIGINT` |
+| `f32` | `FLOAT` |
+| `f64` | `DOUBLE` |
+| `Number` | `NUMBER` |
+| `Date` | `DATE` |
+| `Time` | `SHORTTIME` |
+| `Timestamp` | `TIMESTAMP` |
+| `IntervalYM` | `INTERVAL YEAR TO MONTH` |
+| `IntervalDS` | `INTERVAL DAY TO SECOND` |
+| `&str`, `String` | `VARCHAR` |
+| `&[u8]`, `Vec<u8>` | `BINARY` |
+
+The corresponding `Option<T>` forms keep the same database type and add SQL
+`NULL` handling. The complete accepted forms for `input`, `output`, and
+`in_out` are documented on those functions.
+
+Named parameters use a NUL-terminated `CString` or `&CStr`. Pass the name
+without the SQL placeholder prefix: `value` corresponds to `:value` in SQL.
+
+```rust
+use std::ffi::CString;
+use yashandb::{Connection, Error, input, named};
+
+fn call_procedure(conn: &mut Connection, id: i64) -> Result<(), Error> {
+    let name = CString::new("id").map_err(|_| Error::InvalidArgument("invalid parameter name".into()))?;
+    conn.execute_named_with(
+        "begin process_user(:id); end;",
+        [named(name, input(id))],
+    )?;
+    Ok(())
+}
+```
+
+`output` and `in_out` values are written back to mutable Rust targets after
+execution. `output` only receives the database value; `in_out` also sends the
+target's initial value to the database:
+
+```rust
+use std::ffi::CString;
+use yashandb::{Connection, Error, named, output};
+
+fn read_output(conn: &mut Connection) -> Result<(Option<i64>, String), Error> {
+    let mut value: Option<i64> = None;
+    let name = CString::new("value").map_err(|_| Error::InvalidArgument("invalid parameter name".into()))?;
+    conn.prepare("begin :value := cast(42 as bigint); end;")?
+        .execute_named([named(name, output(&mut value))])?;
+
+    let mut text = String::with_capacity(128);
+    let name = CString::new("text").map_err(|_| Error::InvalidArgument("invalid parameter name".into()))?;
+    conn.prepare("begin :text := 'hello'; end;")?
+        .execute_named([named(name, output(&mut text))])?;
+    Ok((value, text))
+}
+```
+
+For an input/output parameter:
+
+```rust
+let mut value = 7_i64;
+stmt.execute([in_out(&mut value)])?;
+```
+
+For nullable variable-size output, provide a minimum buffer capacity. An
+existing target allocation with greater capacity may be reused:
+
+```rust
+let mut value: Option<String> = None;
+stmt.execute_named([named(
+    c"value".as_c_str(),
+    output((&mut value, 128)),
+)])?;
+```
+
+`String` and `Vec<u8>` use their existing capacity as the output limit. Output
+that exceeds the capacity returns an error rather than being truncated. If an
+execution returns an error, output and input/output targets may already contain
+data written by the client; their updates are not atomic. A prepared query
+borrows the statement until its `ResultSet` is finished or dropped; finish the
+result set before executing the statement again.
 
 ### Connection URL formats
 

@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use crate::types::DataType;
+use crate::column::DataType;
 
 /// Errors returned by the YashanDB driver.
 #[derive(Debug)]

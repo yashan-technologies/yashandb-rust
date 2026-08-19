@@ -17,7 +17,7 @@ use raw::*;
 
 pub use conn::{DbcHandle, EnvHandle};
 pub use raw::{YacCharsetCode, YacExtType, YacTxnIsolation, YacType};
-pub use stmt::StmtHandle;
+pub use stmt::{ParameterBinding, ParameterValue, StmtHandle};
 
 pub const NULL_DATA: i32 = -1;
 
@@ -37,6 +37,11 @@ pub struct YacLib {
     get_conn_attr: YacGetConnAttr,
     get_diag_rec: YacGetDiagRec,
     direct_execute: YacDirectExecute,
+    prepare: YacPrepare,
+    execute: YacExecute,
+    bind_parameter: YacBindParameter,
+    bind_parameter_by_name: YacBindParameterByName,
+    num_params: YacNumParams,
     fetch: YacFetch,
     get_stmt_attr: YacGetStmtAttr,
     bind_column: YacBindColumn,
@@ -58,6 +63,11 @@ impl YacLib {
         let get_conn_attr = try_load_symbol(&loaded.lib, c"yacGetConnAttr")?;
         let get_diag_rec = try_load_symbol(&loaded.lib, c"yacGetDiagRec")?;
         let direct_execute = try_load_symbol(&loaded.lib, c"yacDirectExecute")?;
+        let prepare = try_load_symbol(&loaded.lib, c"yacPrepare")?;
+        let execute = try_load_symbol(&loaded.lib, c"yacExecute")?;
+        let bind_parameter = try_load_symbol(&loaded.lib, c"yacBindParameter")?;
+        let bind_parameter_by_name = try_load_symbol(&loaded.lib, c"yacBindParameterByName")?;
+        let num_params = try_load_symbol(&loaded.lib, c"yacNumParams")?;
         let fetch = try_load_symbol(&loaded.lib, c"yacFetch")?;
         let get_stmt_attr = try_load_symbol(&loaded.lib, c"yacGetStmtAttr")?;
         let bind_column = try_load_symbol(&loaded.lib, c"yacBindColumn")?;
@@ -76,6 +86,11 @@ impl YacLib {
             get_conn_attr,
             get_diag_rec,
             direct_execute,
+            prepare,
+            execute,
+            bind_parameter,
+            bind_parameter_by_name,
+            num_params,
             fetch,
             get_stmt_attr,
             bind_column,

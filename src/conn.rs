@@ -3,6 +3,7 @@
 use crate::error::Error;
 use crate::ffi;
 use crate::library;
+use crate::param::{BindParam, NamedBindParam};
 use crate::result_set::ResultSet;
 use crate::stmt::{ExecResult, Statement};
 
@@ -137,7 +138,7 @@ impl Connection {
     #[inline]
     pub fn execute(&mut self, sql: &str) -> Result<ExecResult, Error> {
         let mut stmt = Statement::new(self)?;
-        stmt.execute(sql)
+        stmt.direct_execute(sql)
     }
 
     /// Execute non-parameterized SQL that returns a streaming result set.
@@ -146,8 +147,66 @@ impl Connection {
     /// dropped or [`ResultSet::finish`]ed. Use [`Self::execute`] for SQL that
     /// does not return rows.
     #[inline]
-    pub fn query(&mut self, sql: &str) -> Result<ResultSet<'_>, Error> {
-        Statement::new(self)?.query(sql)
+    pub fn query(&mut self, sql: &str) -> Result<ResultSet<'_, '_>, Error> {
+        Statement::new(self)?.direct_query(sql)
+    }
+
+    /// Prepare SQL for repeated execution on this connection.
+    #[inline]
+    pub fn prepare(&mut self, sql: &str) -> Result<Statement<'_>, Error> {
+        let mut statement = Statement::new(self)?;
+        statement.prepare(sql)?;
+        Ok(statement)
+    }
+
+    /// Execute parameterized SQL using a temporary prepared statement.
+    ///
+    /// Parameters are supplied as an array, slice, or `Vec` of [`BindParam`]
+    /// values.
+    #[inline]
+    pub fn execute_with<'a>(&mut self, sql: &str, params: impl AsMut<[BindParam<'a>]>) -> Result<ExecResult, Error> {
+        self.prepare(sql)?.execute(params)
+    }
+
+    /// Execute parameterized SQL returning rows using a temporary prepared statement.
+    ///
+    /// Parameters are supplied as an array, slice, or `Vec` of [`BindParam`]
+    /// values.
+    #[inline]
+    pub fn query_with<'param>(
+        &mut self,
+        sql: &str,
+        params: impl AsMut<[BindParam<'param>]>,
+    ) -> Result<ResultSet<'_, '_>, Error> {
+        let mut params = params;
+        self.prepare(sql)?.query_owned(params.as_mut())
+    }
+
+    /// Execute named parameterized SQL using a temporary prepared statement.
+    ///
+    /// Names are passed without a SQL placeholder prefix: use `value` for
+    /// `:value` in SQL. Parameters are supplied as an array, slice, or `Vec`.
+    #[inline]
+    pub fn execute_named_with<'name, 'param>(
+        &mut self,
+        sql: &str,
+        params: impl AsMut<[NamedBindParam<'name, 'param>]>,
+    ) -> Result<ExecResult, Error> {
+        self.prepare(sql)?.execute_named(params)
+    }
+
+    /// Execute named parameterized SQL returning rows using a temporary prepared statement.
+    ///
+    /// Names are passed without a SQL placeholder prefix: use `value` for
+    /// `:value` in SQL. Parameters are supplied as an array, slice, or `Vec`.
+    #[inline]
+    pub fn query_named_with<'name, 'param>(
+        &mut self,
+        sql: &str,
+        params: impl AsMut<[NamedBindParam<'name, 'param>]>,
+    ) -> Result<ResultSet<'_, '_>, Error> {
+        let mut params = params;
+        self.prepare(sql)?.query_named_owned(params.as_mut())
     }
 
     /// Execute a query that must return exactly one row and map it.

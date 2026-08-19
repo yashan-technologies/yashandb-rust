@@ -5,8 +5,10 @@
 //! connects through it. The library is found automatically on first use, or can
 //! be loaded explicitly with [`load_library`] / [`load_library_with_path`].
 //! It supports non-parameterized SQL through [`Connection::execute`] and
-//! [`Connection::query`]. Query results are streamed one row at a time through
-//! [`ResultSet::fetch`].
+//! [`Connection::query`], and parameterized SQL through the convenience methods
+//! [`Connection::execute_with`] / [`Connection::query_with`] or a reusable
+//! [`Statement`] from [`Connection::prepare`]. Query results are streamed one
+//! row at a time through [`ResultSet::fetch`].
 //!
 //! # Example
 //!
@@ -29,6 +31,153 @@
 //! drop cleanup releases the statement. Result values support the types listed
 //! by [`Row::get`], including `Option<T>` for database `NULL` values.
 //!
+//! # Interface usage
+//!
+//! Use [`Connection::execute`] for SQL without parameters that does not return
+//! rows, and [`Connection::query`] for a streaming result set:
+//!
+//! ```no_run
+//! # use yashandb::{Connection, Error};
+//! # fn example(conn: &mut Connection) -> Result<(), Error> {
+//! conn.execute("insert into users(id, name) values (1, 'Alice')")?;
+//! let mut rows = conn.query("select id, name from users")?;
+//! while let Some(row) = rows.fetch()? {
+//!     let id: i32 = row.get(0)?;
+//!     let name: Option<String> = row.get("NAME")?;
+//!     let _ = (id, name);
+//! }
+//! rows.finish()?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! Use [`Connection::execute_with`] and [`Connection::query_with`] for
+//! parameterized SQL that is executed once. Construct values with [`input`],
+//! [`output`], and [`in_out`]:
+//!
+//! ```no_run
+//! # use yashandb::{Connection, Error, input};
+//! # fn example(conn: &mut Connection, id: i64, name: &str) -> Result<(), Error> {
+//! conn.execute_with(
+//!     "insert into users(id, name) values (?, ?)",
+//!     [input(id), input(name)],
+//! )?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! For repeated execution, use [`Connection::prepare`] and call
+//! [`Statement::execute`] or [`Statement::query`] on the returned statement:
+//!
+//! ```no_run
+//! # use yashandb::{Connection, Error, input};
+//! # fn example(conn: &mut Connection, ids: &[i64]) -> Result<(), Error> {
+//! let mut stmt = conn.prepare("select id from users where id = ?")?;
+//! for &id in ids {
+//!     let mut rows = stmt.query([input(id)])?;
+//!     while let Some(row) = rows.fetch()? {
+//!         let _: i64 = row.get(0)?;
+//!     }
+//!     rows.finish()?;
+//! }
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! Named parameters use [`Connection::execute_named_with`],
+//! [`Connection::query_named_with`], [`Statement::execute_named`], or
+//! [`Statement::query_named`]. Pass a NUL-terminated [`std::ffi::CStr`] or
+//! [`std::ffi::CString`] to [`named`]. The name is passed without the SQL
+//! placeholder prefix, so `value` corresponds to `:value`:
+//!
+//! ```no_run
+//! # use std::ffi::CString;
+//! # use yashandb::{Connection, Error, input, named};
+//! # fn example(conn: &mut Connection, id: i64) -> Result<(), Error> {
+//! let name = CString::new("id").map_err(|_| Error::InvalidArgument("invalid parameter name".into()))?;
+//! conn.execute_named_with(
+//!     "begin process_user(:id); end;",
+//!     [named(name, input(id))],
+//! )?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! Input `Option<T>` values represent SQL `NULL`. Output targets are passed by
+//! mutable reference and are updated after execution; variable-size targets
+//! use their existing capacity. For nullable variable-size output, pass a
+//! minimum buffer capacity such as `output((&mut value, 128))`; an existing
+//! larger allocation may be reused.
+//! [`output`] only receives the database value, while [`in_out`] also sends the
+//! target's initial value:
+//!
+//! If execution returns an error, output and input/output targets may already
+//! contain data written by the client. Their updates are not atomic.
+//!
+//! Query results are read with [`Row::get`]. The supported SQL-to-Rust
+//! mappings are:
+//!
+//! | SQL type | Rust type |
+//! | --- | --- |
+//! | `BOOL` | `bool` / `Option<bool>` |
+//! | `TINYINT` | `i8` / `Option<i8>` |
+//! | `SMALLINT` | `i16` / `Option<i16>` |
+//! | `INTEGER` | `i32` / `Option<i32>` |
+//! | `BIGINT` | `i64` / `Option<i64>` |
+//! | `FLOAT` | `f32` / `Option<f32>` |
+//! | `DOUBLE` | `f64` / `Option<f64>` |
+//! | `NUMBER` | [`Number`] / `Option<Number>` |
+//! | `DATE` | [`Date`] / `Option<Date>` |
+//! | `SHORTTIME` | [`Time`] / `Option<Time>` |
+//! | `TIMESTAMP` | [`Timestamp`] / `Option<Timestamp>` |
+//! | `INTERVAL YEAR TO MONTH` | [`IntervalYM`] / `Option<IntervalYM>` |
+//! | `INTERVAL DAY TO SECOND` | [`IntervalDS`] / `Option<IntervalDS>` |
+//! | `CHAR`, `NCHAR`, `VARCHAR`, `NVARCHAR` | `String`, `&str`, or their `Option<T>` forms |
+//! | `BINARY` | `Vec<u8>`, `&[u8]`, or their `Option<T>` forms |
+//!
+//! For parameter binding, the direction is reversed: the Rust type determines
+//! the YashanDB/YACLI type:
+//!
+//! | Rust type | YashanDB/YACLI type |
+//! | --- | --- |
+//! | `bool` / `Option<bool>` | `BOOL` |
+//! | `i8` / `Option<i8>` | `TINYINT` |
+//! | `i16` / `Option<i16>` | `SMALLINT` |
+//! | `i32` / `Option<i32>` | `INTEGER` |
+//! | `i64` / `Option<i64>` | `BIGINT` |
+//! | `f32` / `Option<f32>` | `FLOAT` |
+//! | `f64` / `Option<f64>` | `DOUBLE` |
+//! | [`Number`] / `Option<Number>` | `NUMBER` |
+//! | [`Date`] / `Option<Date>` | `DATE` |
+//! | [`Time`] / `Option<Time>` | `SHORTTIME` |
+//! | [`Timestamp`] / `Option<Timestamp>` | `TIMESTAMP` |
+//! | [`IntervalYM`] / `Option<IntervalYM>` | `INTERVAL YEAR TO MONTH` |
+//! | [`IntervalDS`] / `Option<IntervalDS>` | `INTERVAL DAY TO SECOND` |
+//! | `&str` / `String` and their `Option<T>` forms | `VARCHAR` |
+//! | `&[u8]` / `Vec<u8>` and their `Option<T>` forms | `BINARY` |
+//!
+//! The corresponding `Option<T>` input and output forms keep the same database
+//! type and add SQL `NULL` handling.
+//!
+//! ```no_run
+//! # use yashandb::{Connection, Error, in_out, named, output};
+//! # fn example(conn: &mut Connection) -> Result<(), Error> {
+//! let mut value = 7_i64;
+//! let mut stmt = conn.prepare("begin :value := :value + 1; end;")?;
+//! stmt.execute_named([named(c"value", in_out(&mut value))])?;
+//! stmt.finish()?;
+//!
+//! let mut text = String::with_capacity(128);
+//! let mut stmt = conn.prepare("begin :text := 'hello'; end;")?;
+//! stmt.execute_named([named(c"text", output(&mut text))])?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! A result set borrows its connection, or its prepared statement, until it is
+//! finished or dropped. Finish the result set before reusing a prepared
+//! statement.
+//!
 //! # Client library version
 //!
 //! The driver targets the YashanDB client library **23.4.1.100** and later as
@@ -50,18 +199,22 @@
 
 #![warn(missing_docs)]
 
+mod column;
 mod conn;
 mod error;
 mod ffi;
 mod library;
 mod load;
+mod param;
 mod result_set;
 mod stmt;
 mod types;
 
+pub use column::{ColumnInfo, DataType, DataTypeInfo};
 pub use conn::{Connection, ConnectionBuilder, TransactionIsolation};
 pub use error::Error;
 pub use library::{load_library, load_library_with_path};
+pub use param::{BindParam, NamedBindParam, in_out, input, named, output};
 pub use result_set::{ResultSet, Row};
-pub use stmt::ExecResult;
-pub use types::{ColumnInfo, DataType, DataTypeInfo, Date, IntervalDS, IntervalYM, Number, Time, Timestamp};
+pub use stmt::{ExecResult, Statement};
+pub use types::{Date, IntervalDS, IntervalYM, Number, Time, Timestamp};

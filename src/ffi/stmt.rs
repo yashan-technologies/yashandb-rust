@@ -1,5 +1,6 @@
 //! Statement allocation, execution, metadata, binding, and fetch operations.
 
+use std::ffi::CStr;
 use std::ffi::c_void;
 use std::ptr::NonNull;
 
@@ -9,6 +10,18 @@ use crate::ffi::{DbcHandle, YacLib};
 
 #[repr(transparent)]
 pub struct StmtHandle(NonNull<c_void>);
+
+pub enum ParameterValue<'a> {
+    Input(&'a [u8]),
+    Output(&'a mut [u8]),
+    InOut(&'a mut [u8]),
+}
+
+pub struct ParameterBinding<'a> {
+    pub ext_type: YacExtType,
+    pub value: ParameterValue<'a>,
+    pub indicator: &'a mut i32,
+}
 
 impl YacLib {
     #[inline]
@@ -27,7 +40,77 @@ impl YacLib {
 
     #[inline]
     pub fn direct_execute(&self, stmt: &mut StmtHandle, sql: &str) -> Result<(), Error> {
-        self.try_call(|| unsafe { (self.direct_execute)(stmt.0.as_ptr(), sql.as_ptr(), sql.len() as i32) })
+        assert!(sql.len() <= i32::MAX as usize);
+        let len = sql.len() as i32;
+        self.try_call(|| unsafe { (self.direct_execute)(stmt.0.as_ptr(), sql.as_ptr(), len) })
+    }
+
+    #[inline]
+    pub fn prepare(&self, stmt: &mut StmtHandle, sql: &str) -> Result<(), Error> {
+        assert!(sql.len() <= i32::MAX as usize);
+        let len = sql.len() as i32;
+        self.try_call(|| unsafe { (self.prepare)(stmt.0.as_ptr(), sql.as_ptr(), len) })
+    }
+
+    #[inline]
+    pub fn execute(&self, stmt: &mut StmtHandle) -> Result<(), Error> {
+        self.try_call(|| unsafe { (self.execute)(stmt.0.as_ptr()) })
+    }
+
+    #[inline]
+    pub fn num_params(&self, stmt: &StmtHandle) -> Result<u16, Error> {
+        let mut count = 0;
+        self.try_call(|| unsafe { (self.num_params)(stmt.0.as_ptr(), &mut count) })?;
+        Ok(count)
+    }
+
+    #[inline]
+    pub fn bind_parameter(&self, stmt: &mut StmtHandle, id: u16, binding: ParameterBinding<'_>) -> Result<(), Error> {
+        let ParameterBinding {
+            ext_type,
+            value,
+            indicator,
+        } = binding;
+        let (direction, value, bind_size) = parameter_value(value);
+        self.try_call(|| unsafe {
+            (self.bind_parameter)(
+                stmt.0.as_ptr(),
+                id,
+                direction,
+                ext_type as u32,
+                value,
+                bind_size,
+                bind_size,
+                indicator,
+            )
+        })
+    }
+
+    #[inline]
+    pub fn bind_parameter_by_name(
+        &self,
+        stmt: &mut StmtHandle,
+        name: &CStr,
+        binding: ParameterBinding<'_>,
+    ) -> Result<(), Error> {
+        let ParameterBinding {
+            ext_type,
+            value,
+            indicator,
+        } = binding;
+        let (direction, value, bind_size) = parameter_value(value);
+        self.try_call(|| unsafe {
+            (self.bind_parameter_by_name)(
+                stmt.0.as_ptr(),
+                name.as_ptr().cast_mut().cast(),
+                direction,
+                ext_type as u32,
+                value,
+                bind_size,
+                bind_size,
+                indicator,
+            )
+        })
     }
 
     #[inline]
@@ -205,4 +288,15 @@ impl YacLib {
         self.try_call(|| unsafe { (self.fetch)(stmt.0.as_ptr(), &mut rows) })?;
         Ok(rows)
     }
+}
+
+#[inline]
+fn parameter_value(value: ParameterValue<'_>) -> (YacParamDirection, *mut c_void, i32) {
+    let (direction, ptr, len) = match value {
+        ParameterValue::Input(value) => (YacParamDirection::Input, value.as_ptr().cast_mut().cast(), value.len()),
+        ParameterValue::Output(value) => (YacParamDirection::Output, value.as_mut_ptr().cast(), value.len()),
+        ParameterValue::InOut(value) => (YacParamDirection::InOut, value.as_mut_ptr().cast(), value.len()),
+    };
+    assert!(len <= i32::MAX as usize);
+    (direction, ptr, len as i32)
 }
