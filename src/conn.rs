@@ -6,6 +6,7 @@ use crate::library;
 use crate::param::{BindParam, NamedBindParam};
 use crate::result_set::ResultSet;
 use crate::stmt::{ExecResult, Statement};
+use crate::transaction::Transaction;
 
 /// A synchronous blocking connection to a YashanDB instance.
 ///
@@ -68,16 +69,65 @@ impl Connection {
 
     // --- runtime conn attr getters/setters ---
 
-    /// Get the auto-commit mode.
+    /// Get the connection's auto-commit mode.
+    ///
+    /// New connections use manual commit (`false`) by default. See
+    /// [`Self::transaction`] for a scoped transaction on an auto-commit
+    /// connection.
     #[inline]
     pub fn auto_commit(&self) -> bool {
         self.lib.get_conn_auto_commit(&self.dbc)
     }
 
-    /// Set the auto-commit mode.
+    /// Set the connection's auto-commit mode.
+    ///
+    /// Changing this attribute does not replace an explicit [`Self::commit`] or
+    /// [`Self::rollback`] for pending work.
     #[inline]
     pub fn set_auto_commit(&mut self, enabled: bool) {
-        self.lib.set_conn_auto_commit(&mut self.dbc, enabled);
+        self.lib.set_conn_auto_commit(&mut self.dbc, enabled)
+    }
+
+    /// Commit the current transaction without changing auto-commit mode.
+    ///
+    /// Use this to finish work managed directly on a manual-commit connection.
+    /// Prefer [`Self::transaction`] when a scoped guard is appropriate.
+    #[inline]
+    pub fn commit(&mut self) -> Result<(), Error> {
+        self.lib.commit(&mut self.dbc)
+    }
+
+    /// Roll back the current transaction without changing auto-commit mode.
+    ///
+    /// Use this to discard work managed directly on a manual-commit connection.
+    /// Prefer [`Self::transaction`] when a scoped guard is appropriate.
+    #[inline]
+    pub fn rollback(&mut self) -> Result<(), Error> {
+        self.lib.rollback(&mut self.dbc)
+    }
+
+    /// Start a scoped guard for the current connection transaction.
+    ///
+    /// When auto-commit is enabled, the guard disables it until commit,
+    /// rollback, or drop and then restores it. When auto-commit is disabled,
+    /// the guard takes ownership of the current connection transaction; its
+    /// completion affects any work already pending on the connection. It does
+    /// not send `BEGIN`, create a separate server transaction, or support
+    /// nesting.
+    ///
+    /// An unfinished guard attempts to roll back when dropped. The guard
+    /// exclusively borrows this connection, so finish result sets and
+    /// statements created through it before calling [`Transaction::commit`] or
+    /// [`Transaction::rollback`]. If application SQL executes transaction
+    /// control statements directly, the application is responsible for keeping
+    /// its transaction state consistent with this guard.
+    #[inline]
+    pub fn transaction(&mut self) -> Transaction<'_> {
+        let restore_auto_commit = self.auto_commit();
+        if restore_auto_commit {
+            self.set_auto_commit(false);
+        }
+        Transaction::new(self, restore_auto_commit)
     }
 
     /// Get the transaction isolation level.
@@ -397,7 +447,9 @@ impl ConnectionBuilder {
         self
     }
 
-    /// Set the auto-commit mode.
+    /// Set the auto-commit mode used by the new connection.
+    ///
+    /// The default is manual commit (`false`).
     #[inline]
     pub const fn auto_commit(mut self, enabled: bool) -> Self {
         self.auto_commit = Some(enabled);
@@ -444,9 +496,7 @@ impl ConnectionBuilder {
             }
             lib.set_conn_packet_size(dbc, bytes);
         }
-        if let Some(enabled) = self.auto_commit {
-            lib.set_conn_auto_commit(dbc, enabled);
-        }
+        lib.set_conn_auto_commit(dbc, self.auto_commit.unwrap_or(false));
         if let Some(enabled) = self.heartbeat_enabled {
             lib.set_conn_heartbeat_enabled(dbc, enabled);
         }

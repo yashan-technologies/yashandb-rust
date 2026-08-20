@@ -8,7 +8,10 @@
 //! [`Connection::query`], and parameterized SQL through the convenience methods
 //! [`Connection::execute_with`] / [`Connection::query_with`] or a reusable
 //! [`Statement`] from [`Connection::prepare`]. Query results are streamed one
-//! row at a time through [`ResultSet::fetch`].
+//! row at a time through [`ResultSet::fetch`]. Transactions use manual commit
+//! by default. Use [`Connection::commit`] and [`Connection::rollback`] in that
+//! mode, or enable auto-commit and use [`Connection::transaction`] for a scoped
+//! transaction.
 //!
 //! # Example
 //!
@@ -30,6 +33,45 @@
 //! explicit native-statement release error is needed; otherwise normal Rust
 //! drop cleanup releases the statement. Result values support the types listed
 //! by [`Row::get`], including `Option<T>` for database `NULL` values.
+//!
+//! # Transactions
+//!
+//! New connections use manual commit by default. Finish directly managed work
+//! with [`Connection::commit`] or discard it with [`Connection::rollback`];
+//! neither changes the connection's auto-commit setting:
+//!
+//! ```no_run
+//! # use yashandb::{Connection, Error};
+//! # fn example(conn: &mut Connection) -> Result<(), Error> {
+//! conn.execute("insert into audit_log(message) values ('created')")?;
+//! conn.commit()?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! For a scoped transaction on a connection configured with auto-commit, use
+//! [`Connection::transaction`]. It temporarily disables auto-commit, and
+//! restores it after commit, rollback, or drop. Dropping an unfinished guard
+//! attempts to roll back; call [`Transaction::rollback`] explicitly when its
+//! error must be observed:
+//!
+//! ```no_run
+//! # use yashandb::{Connection, Error};
+//! # fn example(conn: &mut Connection) -> Result<(), Error> {
+//! conn.set_auto_commit(true);
+//! let mut tx = conn.transaction();
+//! tx.execute("update accounts set balance = balance - 10 where id = 1")?;
+//! tx.execute("update accounts set balance = balance + 10 where id = 2")?;
+//! tx.commit()?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! In manual-commit mode, a scoped transaction guard owns the current
+//! connection transaction, including work pending before it was created. It
+//! does not start a separate server transaction or support nesting. A result
+//! set or statement created from a guard must be finished or dropped before the
+//! guard can be committed or rolled back.
 //!
 //! # Interface usage
 //!
@@ -208,6 +250,7 @@ mod load;
 mod param;
 mod result_set;
 mod stmt;
+mod transaction;
 mod types;
 
 pub use column::{ColumnInfo, DataType, DataTypeInfo};
@@ -217,4 +260,5 @@ pub use library::{load_library, load_library_with_path};
 pub use param::{BindParam, NamedBindParam, in_out, input, named, output};
 pub use result_set::{ResultSet, Row};
 pub use stmt::{ExecResult, Statement};
+pub use transaction::Transaction;
 pub use types::{Date, IntervalDS, IntervalYM, Number, Time, Timestamp};

@@ -100,6 +100,18 @@ impl YacLib {
         // yacDisconnect returns void; the C driver handles the disconnect internally.
         unsafe { (self.disconnect)(dbc.0.as_ptr()) };
     }
+
+    /// Commit the current transaction on a connection.
+    #[inline]
+    pub fn commit(&self, dbc: &mut DbcHandle) -> Result<(), Error> {
+        self.try_call(|| unsafe { (self.commit)(dbc.0.as_ptr()) })
+    }
+
+    /// Roll back the current transaction on a connection.
+    #[inline]
+    pub fn rollback(&self, dbc: &mut DbcHandle) -> Result<(), Error> {
+        self.try_call(|| unsafe { (self.rollback)(dbc.0.as_ptr()) })
+    }
 }
 
 /// Convert a connection parameter length to the C `YacInt16` length field,

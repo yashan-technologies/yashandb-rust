@@ -13,6 +13,7 @@ synchronous, blocking connection to a YashanDB instance.
   rows and column metadata.
 - **Prepared statements and parameter binding** for positional and named
   parameters, including input, output, and input/output values.
+- **Manual and scoped transactions** with explicit commit and rollback APIs.
 
 ## MSRV
 
@@ -256,6 +257,47 @@ execution returns an error, output and input/output targets may already contain
 data written by the client; their updates are not atomic. A prepared query
 borrows the statement until its `ResultSet` is finished or dropped; finish the
 result set before executing the statement again.
+
+### Transactions
+
+New connections use manual commit by default. Call `commit` to make current
+connection work visible, or `rollback` to discard it; neither method changes
+the auto-commit setting.
+
+```rust
+use yashandb::{Connection, Error};
+
+fn create_user(conn: &mut Connection) -> Result<(), Error> {
+    conn.execute("insert into users(id, name) values (1, 'Alice')")?;
+    conn.commit()?;
+    Ok(())
+}
+```
+
+For a scoped transaction on an auto-commit connection, enable auto-commit and
+use `transaction`. The guard temporarily disables auto-commit and restores it
+after `commit`, `rollback`, or drop. An unfinished guard attempts to roll back;
+call `rollback` explicitly when the rollback error must be handled.
+
+```rust
+use yashandb::{Connection, Error};
+
+fn transfer(conn: &mut Connection) -> Result<(), Error> {
+    conn.set_auto_commit(true);
+    let mut tx = conn.transaction();
+    tx.execute("update accounts set balance = balance - 10 where id = 1")?;
+    tx.execute("update accounts set balance = balance + 10 where id = 2")?;
+    tx.commit()
+}
+```
+
+With manual commit enabled, `transaction` guards the connection's current
+transaction, including work performed before the guard was created. It does not
+send `BEGIN`, create an independent server transaction, or support nesting. A
+result set or statement created from a transaction must be finished or dropped
+before committing or rolling back. The driver permits transaction-control SQL;
+when an application executes it directly, the application is responsible for
+maintaining transaction state consistent with the guard.
 
 ### Connection URL formats
 

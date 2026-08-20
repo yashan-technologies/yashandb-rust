@@ -1,45 +1,31 @@
 # AGENTS.md
 
-## Project
+## Project and Commands
 
-- Single Rust crate (`yashandb`), edition 2024, MSRV 1.95; it dynamically loads the C `yascli` client with `libloading`.
-- No CI, workspace, feature flags, or lint/task-runner configuration is present. `rustfmt.toml` sets `max_width = 120`.
+- This is one blocking Rust crate (`yashandb`), edition 2024, MSRV 1.95. It dynamically loads the C `yascli` client through `libloading`; no workspace, CI, feature flags, task runner, or lint configuration exists. `rustfmt.toml` sets `max_width = 120`.
+- Format with `cargo fmt` (`cargo fmt --check` to check), lint with `cargo clippy --all-targets`, build with `cargo build`, and run unit tests with `cargo test --lib`.
+- Run one integration binary with `cargo test --test {library|connect|connection_attr|query|prepared|transaction}`; `cargo test` runs all tests.
+- Integration tests skip successfully unless `YASCLI_HOME` (directory containing `yascli.dll` on Windows or `libyascli.so` elsewhere), `YASDB_URL`, `YASDB_USER`, and `YASDB_PASSWORD` are set. Tests that load or connect must take that binary's `LIB_LOCK` and use `tests/common/mod.rs` skip helpers because library loading is process-global.
 
-## Commands
+## FFI and Resource Boundaries
 
-- Format: `cargo fmt` (check only with `cargo fmt --check`).
-- Lint: `cargo clippy --all-targets`.
-- Build: `cargo build`.
-- Unit tests: `cargo test --lib`.
-- One integration test binary: `cargo test --test library`, `cargo test --test connect`, or `cargo test --test connection_attr`.
-- Full suite: `cargo test`.
-- Integration tests use the real client/database only when configured; otherwise they print a skip message and return successfully. To exercise them, set `YASCLI_HOME` (directory containing `yascli.dll` on Windows or `libyascli.so` elsewhere), `YASDB_URL`, `YASDB_USER`, and `YASDB_PASSWORD` before `cargo test`.
+- Put all declarations mirroring `yacli.h` only in `src/ffi/raw.rs`: C types, function pointers, `#[repr(C)]` structs, and enum values. Keep the scoped `#![allow(dead_code)]` there; raw enum variants omit the C prefix and types retain `Yac`.
+- FFI capability modules implement `YacLib` (`attr`, `conn`, `diag`, `stmt`). Resolve every new dynamic symbol in `YacLib::from_loaded` in `src/ffi/mod.rs`; symbols are mandatory and must fail at load time when unavailable.
+- Keep `ffi` a thin ABI layer. Safe-layer modules must not expose or manipulate native handles such as `StmtHandle`; `Statement<'conn>` owns the handle and releases it through RAII. `Statement::finish(self)` must report release errors without allowing `Drop` to free it again.
+- FFI handle methods intentionally take `&mut`, including reads, to enforce exclusive native-handle access. `Connection` is `Send` but not `Sync`.
+- `YacResult::Success` and `SuccessWithInfo` are successful; map all other results through diagnostics to `Error::Database`.
+- `src/library.rs` owns the global client singleton: the first successful load wins, a different explicit path returns `Error::ClientLibrary`, and failures leave it retryable. Preserve `Connection::connect` lazy loading. `src/load.rs` tries the bare platform name, then the per-user client directory; keep the main library declared before dependency handles so it drops first.
 
-## Architecture
+## Safe API Invariants
 
-- `src/ffi/raw.rs` is the only location for declarations that mirror `yacli.h`: C types, `extern "C"`/function pointers, `#[repr(C)]` structs, and enum values. Keep its `#![allow(dead_code)]` scoped there; raw enum variants drop the C prefix and types retain `Yac`.
-- FFI capabilities are separate modules implementing `YacLib` (`attr`, `conn`, `diag`). Every new dynamic symbol must be resolved in `YacLib::from_loaded` in `src/ffi/mod.rs`; symbols are required at load time so missing ones fail fast.
-- `src/load.rs` tries the bare platform library name first, then `%USERPROFILE%\\.yashandb\\client\\lib` on Windows or `$HOME/.yashandb/client/lib` elsewhere. Bundled dependencies are preloaded there; `Loaded` declares the main library before dependency handles so the main library drops first.
-- `src/library.rs` owns the process-global `YAC_LIB` singleton. First load wins: a different explicit path returns `Error::ClientLibrary`; failed loads leave the singleton unset for retry. `Connection::connect` must keep its lazy auto-load behavior.
-- `Connection` is `Send` but not `Sync`; FFI handle methods intentionally take `&mut` even for reads to enforce exclusive access.
-- `YacResult::Success` and `SuccessWithInfo` are successful. Other results are converted through diagnostics into `Error::Database`.
-- Keep `ffi` as the thin C ABI/dynamic-call layer. Native handles such as `StmtHandle` must not escape into `Connection`, `ResultSet`, or other safe-layer modules.
-- `Statement<'conn>` is the safe statement owner: it directly owns its `StmtHandle`, exclusively borrows its `Connection`, and releases the native statement through RAII. `Connection` and `ResultSet` must use `Statement` methods rather than calling statement FFI methods or touching `StmtHandle` directly.
-- `Statement::finish(self)` must propagate a native release failure and avoid a subsequent double free from `Drop`. Do not use `Option<StmtHandle>` solely to model normal statement ownership.
-- Keep C-shaped names such as `direct_execute` in `ffi`; the safe statement API exposes operation-level methods such as `execute` and `query`. `Connection::execute` and `Connection::query` should only create a `Statement` and delegate.
-- The client default statement rowset size is one. Do not explicitly set it to one; `ResultSet::fetch` interprets fetch counts as `0` for EOF and `1` for one row, treating any other count as an error.
-- Place public database type and column metadata definitions in `src/types.rs`. `ColumnInfo` stores only its name, `DataTypeInfo`, and nullability; type-specific metadata must be represented by `DataTypeInfo` variants rather than broadly accessible optional fields.
+- `Connection::{execute,query}` only create a `Statement` and delegate. Keep C-shaped names such as `direct_execute` in `ffi`; the safe API uses operation names. A `ResultSet` or prepared-query result must be finished or dropped before reusing its statement.
+- Binding belongs in `src/param/`: `BindParam` owns/borrows client buffers and decodes output after execution. Do not let client buffer pointers escape the call. Positional and named bind counts must match the client-reported count; named parameters are unique NUL-terminated `CStr` names without `:`.
+- `String` and `Vec<u8>` output capacity is the client output limit. Nullable variable-length output requires `(&mut Option<String>, capacity)` or `(&mut Option<Vec<u8>>, capacity)`. Output and input/output targets may be partially updated after an error.
+- New connections have manual commit enabled (`auto_commit == false`). `Connection::commit` and `rollback` do not change that setting. `Connection::transaction` is a non-nestable guard over the current connection transaction, not a server `BEGIN` or independent transaction.
+- A transaction created while auto-commit is enabled disables it and restores it after `commit`, `rollback`, or drop. In manual-commit mode, it includes work pending before guard creation. An unfinished guard attempts rollback but drops its error; use explicit `rollback` when cleanup errors matter. Statements and result sets borrowed from the guard must finish or drop before completion, and direct transaction-control SQL is the caller's responsibility.
+- Public database types and column metadata live in `src/types.rs`; `ColumnInfo` contains only name, `DataTypeInfo`, and nullability. `ConnectionBuilder::connect` must set UTF-8 before connecting. Connection argument byte lengths use `i16` and oversized strings return `Error::InvalidArgument`.
 
-## Constraints
+## Style Constraints
 
-- `ConnectionBuilder::connect` sets the environment charset to UTF-8 before connecting. Do not assume the client default encoding is usable for Rust strings.
-- Connection parameters are passed with `i16` byte lengths; `conn_param_len` rejects oversized strings with `Error::InvalidArgument`.
-- `Error` is `#[non_exhaustive]`; external matches must include a wildcard.
-- `src/lib.rs` enables `#![warn(missing_docs)]`; document every new public item.
-- Do not suppress `missing_docs`, dead-code, or other warnings outside the raw ABI mapping. Add the required documentation or remove obsolete code instead.
-- For small forwarding methods and simple accessors, use `#[inline]`. Use `const fn` for simple public accessors when the operation is valid in const contexts, and combine it with `#[inline]`.
-- When adding crate-internal helper methods to an existing `impl`, append them at the end of that `impl` unless their placement is required by a more specific local convention.
-
-## Test Concurrency
-
-- Library state is process-global. Tests that load/connect must serialize through their binary's `LIB_LOCK` and use the existing skip-if-unset helpers in `tests/common/mod.rs`; follow that pattern for new integration tests.
+- `src/lib.rs` warns on missing public docs. Add documentation for every public item; do not suppress warnings outside the raw ABI mapping. `Error` is `#[non_exhaustive]`, so external matches require a wildcard arm.
+- Use `#[inline]` for small forwarding methods/accessors and `const fn` plus `#[inline]` for const-safe public accessors. Append crate-internal helpers to the end of an existing `impl` unless local placement requires otherwise.

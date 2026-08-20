@@ -31,6 +31,8 @@ pub struct YacLib {
     free_handle: YacFreeHandle,
     connect: YacConnect,
     disconnect: YacDisconnect,
+    commit: YacCommit,
+    rollback: YacRollback,
     set_env_attr: YacSetEnvAttr,
     get_env_attr: YacGetEnvAttr,
     set_conn_attr: YacSetConnAttr,
@@ -57,6 +59,8 @@ impl YacLib {
         let free_handle = try_load_symbol(&loaded.lib, c"yacFreeHandle")?;
         let connect = try_load_symbol(&loaded.lib, c"yacConnect")?;
         let disconnect = try_load_symbol(&loaded.lib, c"yacDisconnect")?;
+        let commit = try_load_symbol(&loaded.lib, c"yacCommit")?;
+        let rollback = try_load_symbol(&loaded.lib, c"yacRollback")?;
         let set_env_attr = try_load_symbol(&loaded.lib, c"yacSetEnvAttr")?;
         let get_env_attr = try_load_symbol(&loaded.lib, c"yacGetEnvAttr")?;
         let set_conn_attr = try_load_symbol(&loaded.lib, c"yacSetConnAttr")?;
@@ -80,6 +84,8 @@ impl YacLib {
             free_handle,
             connect,
             disconnect,
+            commit,
+            rollback,
             set_env_attr,
             get_env_attr,
             set_conn_attr,

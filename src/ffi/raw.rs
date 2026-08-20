@@ -232,6 +232,10 @@ pub type YacConnect = unsafe extern "C" fn(
 
 pub type YacDisconnect = unsafe extern "C" fn(h_conn: YacHandle);
 
+pub type YacCommit = unsafe extern "C" fn(h_conn: YacHandle) -> YacResult;
+
+pub type YacRollback = unsafe extern "C" fn(h_conn: YacHandle) -> YacResult;
+
 pub type YacSetEnvAttr =
     unsafe extern "C" fn(h_env: YacHandle, attr: YacEnvAttr, value: *mut c_void, length: YacInt32) -> YacResult;
 
