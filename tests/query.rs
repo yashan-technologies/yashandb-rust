@@ -25,7 +25,7 @@ fn setup() -> Option<Connection> {
 
 #[test]
 fn execute_and_query_scalars() {
-    let Some(mut conn) = setup() else { return };
+    let Some(conn) = setup() else { return };
     let result = conn.execute("create temporary table rust_query_test (id integer, name varchar(32))");
     if let Err(Error::Database { .. }) = result {
         // Some server configurations do not permit temporary tables. The query
@@ -78,7 +78,7 @@ fn execute_and_query_scalars() {
 
 #[test]
 fn query_drop_allows_connection_reuse() {
-    let Some(mut conn) = setup() else { return };
+    let Some(conn) = setup() else { return };
     let rows = conn.query("select 1 from dual").expect("query should succeed");
     drop(rows);
     assert_eq!(
@@ -89,8 +89,43 @@ fn query_drop_allows_connection_reuse() {
 }
 
 #[test]
+fn query_allows_other_connection_operations() {
+    let Some(conn) = setup() else { return };
+    let rows = conn.query("select 1 from dual").expect("query should succeed");
+
+    conn.execute("select 2 from dual")
+        .expect("connection operation should succeed");
+    assert!(!conn.auto_commit());
+
+    drop(rows);
+    assert_eq!(
+        conn.query_one_map("select 2 from dual", |row| row.get::<i32>(0))
+            .expect("connection should be reusable"),
+        2
+    );
+}
+
+#[test]
+fn connection_supports_multiple_active_statements() {
+    let Some(conn) = setup() else { return };
+    let mut first_statement = conn
+        .prepare("select 1 from dual")
+        .expect("first statement should prepare");
+    let mut second_statement = conn
+        .prepare("select 2 from dual")
+        .expect("second statement should prepare");
+    let mut first = first_statement.query([]).expect("first query should succeed");
+    let mut second = second_statement.query([]).expect("second query should succeed");
+
+    assert_eq!(first.fetch().unwrap().unwrap().get::<i32>(0).unwrap(), 1);
+    assert_eq!(second.fetch().unwrap().unwrap().get::<i32>(0).unwrap(), 2);
+    first.finish().expect("first result cleanup should succeed");
+    second.finish().expect("second result cleanup should succeed");
+}
+
+#[test]
 fn query_rust_converted_types() {
-    let Some(mut conn) = setup() else { return };
+    let Some(conn) = setup() else { return };
     let value = conn
         .query_one_map("select 123.45 from dual", |row| row.get::<Number>(0))
         .expect("NUMBER should read through Number");
@@ -125,7 +160,7 @@ fn query_rust_converted_types() {
 
 #[test]
 fn query_all_supported_scalar_types() {
-    let Some(mut conn) = setup() else { return };
+    let Some(conn) = setup() else { return };
     let mut rows = conn
         .query(
             "select cast(1 as boolean) as b, cast(-8 as tinyint) as ti, cast(-16 as smallint) as si, \
@@ -165,7 +200,7 @@ fn query_all_supported_scalar_types() {
 
 #[test]
 fn query_time_null_metadata_and_type_errors() {
-    let Some(mut conn) = setup() else { return };
+    let Some(conn) = setup() else { return };
     let mut rows = conn
         .query(
             "select cast('12:34:56.123' as time) as tm, cast(null as integer) as nullable_int, \
@@ -215,7 +250,7 @@ fn query_time_null_metadata_and_type_errors() {
 
 #[test]
 fn query_one_and_optional_cardinality_contracts() {
-    let Some(mut conn) = setup() else { return };
+    let Some(conn) = setup() else { return };
     assert!(matches!(
         conn.query_one_map("select 1 from dual where 1 = 0", |_| Ok(()))
             .unwrap_err(),
@@ -245,7 +280,7 @@ fn query_one_and_optional_cardinality_contracts() {
 
 #[test]
 fn query_nulls_for_all_supported_types() {
-    let Some(mut conn) = setup() else { return };
+    let Some(conn) = setup() else { return };
     let mut rows = conn
         .query(
             "select cast(null as boolean), cast(null as tinyint), cast(null as smallint), \
@@ -279,7 +314,7 @@ fn query_nulls_for_all_supported_types() {
 
 #[test]
 fn query_streams_rows_and_defers_unsupported_type_errors() {
-    let Some(mut conn) = setup() else { return };
+    let Some(conn) = setup() else { return };
     let mut rows = conn
         .query("select 1 as id from dual union all select 2 from dual union all select 3 from dual")
         .expect("multi-row query should succeed");

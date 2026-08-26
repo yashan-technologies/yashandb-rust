@@ -14,13 +14,13 @@ use crate::types::{Date, IntervalDS, IntervalYM, Number, Time, Timestamp, YacNum
 
 use self::binding::ColumnBinding;
 
-/// A single-row, streaming result set that exclusively borrows its connection.
+/// A single-row, streaming result set that shares its connection.
 ///
-/// The connection cannot perform another operation until this result set is
-/// dropped or [`Self::finish`]ed. For a connection query, cleanup releases its
-/// temporary native statement. For a prepared statement query, cleanup ends the
-/// current result stream and makes the statement reusable. Call [`Self::finish`]
-/// when an explicit cleanup error must be observed.
+/// Other statements on the same connection may execute while this result set is
+/// active. For a connection query, cleanup releases its temporary native
+/// statement. For a prepared statement query, cleanup ends the current result
+/// stream and makes the statement reusable. Call [`Self::finish`] when an
+/// explicit cleanup error must be observed.
 pub struct ResultSet<'conn, 'stmt> {
     statement: StatementAccess<'conn, 'stmt>,
     schema: Vec<ColumnInfo>,

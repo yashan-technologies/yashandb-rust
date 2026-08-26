@@ -12,9 +12,9 @@ use crate::result_set::ResultSet;
 
 const COLUMN_NAME_BUFFER_SIZE: usize = 256;
 
-/// A statement allocated from and exclusively borrowing a connection.
+/// A statement allocated from and sharing a connection.
 pub struct Statement<'conn> {
-    conn: &'conn mut Connection,
+    conn: &'conn Connection,
     stmt: StmtHandle,
     state: StatementState,
 }
@@ -31,7 +31,7 @@ enum StatementState {
 
 impl<'conn> Statement<'conn> {
     #[inline]
-    pub(crate) fn new(conn: &'conn mut Connection) -> Result<Self, Error> {
+    pub(crate) fn new(conn: &'conn Connection) -> Result<Self, Error> {
         let stmt = conn.alloc_stmt()?;
         Ok(Self {
             conn,
@@ -42,16 +42,16 @@ impl<'conn> Statement<'conn> {
 
     #[inline]
     pub(crate) fn direct_execute(&mut self, sql: &str) -> Result<ExecResult, Error> {
-        let lib = self.conn.lib();
-        lib.direct_execute(&mut self.stmt, sql)?;
+        self.conn.lib().direct_execute(&mut self.stmt, sql)?;
         Ok(ExecResult {
-            rows_affected: lib.get_stmt_rows_affected(&self.stmt)?,
+            rows_affected: self.conn.lib().get_stmt_rows_affected(&self.stmt)?,
         })
     }
 
     #[inline]
     pub(crate) fn direct_query(mut self, sql: &str) -> Result<ResultSet<'conn, 'conn>, Error> {
         self.conn.lib().direct_execute(&mut self.stmt, sql)?;
+        self.state = StatementState::Active;
         ResultSet::from_stmt(self)
     }
 

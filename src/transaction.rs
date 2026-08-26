@@ -6,7 +6,7 @@ use crate::param::{BindParam, NamedBindParam};
 use crate::result_set::ResultSet;
 use crate::stmt::{ExecResult, Statement};
 
-/// A scoped transaction that exclusively borrows its connection.
+/// A scoped transaction that exclusively owns access to its connection.
 ///
 /// When created from an auto-commit connection, it disables auto-commit while
 /// alive and restores it after an explicit commit, rollback, or drop. When
@@ -17,9 +17,11 @@ use crate::stmt::{ExecResult, Statement};
 ///
 /// Unless it is explicitly committed or rolled back, dropping this guard
 /// attempts to roll back the current connection transaction. Drop cleanup
-/// ignores rollback failures. The guard exclusively borrows its connection, so
-/// a [`ResultSet`] or [`Statement`] created from it must be finished or dropped
-/// before it can be committed or rolled back. Applications that execute
+/// ignores rollback failures. The guard exclusively owns access to its
+/// connection, while ordinary operations use shared borrows so multiple
+/// statements or result sets can be created. A [`ResultSet`] or [`Statement`]
+/// created from it must be finished or dropped before it can be committed or
+/// rolled back. Applications that execute
 /// transaction-control SQL directly are responsible for maintaining a
 /// transaction state consistent with the guard.
 pub struct Transaction<'conn> {
@@ -42,7 +44,7 @@ impl<'conn> Transaction<'conn> {
     ///
     /// See [`Connection::execute`] for the execution and affected-row semantics.
     #[inline]
-    pub fn execute(&mut self, sql: &str) -> Result<ExecResult, Error> {
+    pub fn execute(&self, sql: &str) -> Result<ExecResult, Error> {
         self.conn.execute(sql)
     }
 
@@ -52,7 +54,7 @@ impl<'conn> Transaction<'conn> {
     ///
     /// The result set borrows this transaction until it is finished or dropped.
     #[inline]
-    pub fn query(&mut self, sql: &str) -> Result<ResultSet<'_, '_>, Error> {
+    pub fn query(&self, sql: &str) -> Result<ResultSet<'_, '_>, Error> {
         self.conn.query(sql)
     }
 
@@ -63,7 +65,7 @@ impl<'conn> Transaction<'conn> {
     /// The returned statement borrows this transaction until it is dropped or
     /// finished.
     #[inline]
-    pub fn prepare(&mut self, sql: &str) -> Result<Statement<'_>, Error> {
+    pub fn prepare(&self, sql: &str) -> Result<Statement<'_>, Error> {
         self.conn.prepare(sql)
     }
 
@@ -72,7 +74,7 @@ impl<'conn> Transaction<'conn> {
     /// See [`Connection::execute_with`] for parameter binding semantics.
     #[inline]
     pub fn execute_with<'param>(
-        &mut self,
+        &self,
         sql: &str,
         params: impl AsMut<[BindParam<'param>]>,
     ) -> Result<ExecResult, Error> {
@@ -86,7 +88,7 @@ impl<'conn> Transaction<'conn> {
     /// The result set borrows this transaction until it is finished or dropped.
     #[inline]
     pub fn query_with<'param>(
-        &mut self,
+        &self,
         sql: &str,
         params: impl AsMut<[BindParam<'param>]>,
     ) -> Result<ResultSet<'_, '_>, Error> {
@@ -98,7 +100,7 @@ impl<'conn> Transaction<'conn> {
     /// See [`Connection::execute_named_with`] for named parameter binding semantics.
     #[inline]
     pub fn execute_named_with<'name, 'param>(
-        &mut self,
+        &self,
         sql: &str,
         params: impl AsMut<[NamedBindParam<'name, 'param>]>,
     ) -> Result<ExecResult, Error> {
@@ -113,7 +115,7 @@ impl<'conn> Transaction<'conn> {
     /// The result set borrows this transaction until it is finished or dropped.
     #[inline]
     pub fn query_named_with<'name, 'param>(
-        &mut self,
+        &self,
         sql: &str,
         params: impl AsMut<[NamedBindParam<'name, 'param>]>,
     ) -> Result<ResultSet<'_, '_>, Error> {
@@ -126,7 +128,7 @@ impl<'conn> Transaction<'conn> {
     /// semantics.
     #[inline]
     pub fn query_one_map<T>(
-        &mut self,
+        &self,
         sql: &str,
         map: impl FnOnce(&crate::result_set::Row<'_>) -> Result<T, Error>,
     ) -> Result<T, Error> {
@@ -139,7 +141,7 @@ impl<'conn> Transaction<'conn> {
     /// semantics.
     #[inline]
     pub fn query_opt_map<T>(
-        &mut self,
+        &self,
         sql: &str,
         map: impl FnOnce(&crate::result_set::Row<'_>) -> Result<T, Error>,
     ) -> Result<Option<T>, Error> {

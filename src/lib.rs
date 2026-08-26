@@ -28,11 +28,12 @@
 //!
 //! # Queries
 //!
-//! [`Connection::query`] exclusively borrows its connection until the returned
-//! [`ResultSet`] is dropped or finished. Use [`ResultSet::finish`] when an
-//! explicit native-statement release error is needed; otherwise normal Rust
-//! drop cleanup releases the statement. Result values support the types listed
-//! by [`Row::get`], including `Option<T>` for database `NULL` values.
+//! [`Connection::query`] shares its connection until the returned [`ResultSet`]
+//! is dropped or finished. Other statements on the same connection may execute
+//! while rows are streamed. Use [`ResultSet::finish`] when an explicit
+//! native-statement release error is needed; otherwise normal Rust drop cleanup
+//! releases the statement. Result values support the types listed by
+//! [`Row::get`], including `Option<T>` for database `NULL` values.
 //!
 //! # Transactions
 //!

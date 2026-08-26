@@ -27,7 +27,7 @@ fn setup() -> Option<Connection> {
 
 #[test]
 fn prepared_positional_query_reuses_statement_after_finish() {
-    let Some(mut conn) = setup() else { return };
+    let Some(conn) = setup() else { return };
     let mut stmt = conn
         .prepare("select cast(? as bigint) from dual")
         .expect("prepare should succeed");
@@ -43,7 +43,7 @@ fn prepared_positional_query_reuses_statement_after_finish() {
 
 #[test]
 fn temporary_and_named_prepared_queries_bind_values() {
-    let Some(mut conn) = setup() else { return };
+    let Some(conn) = setup() else { return };
     assert!(matches!(
         conn.query_with(
             "select cast(? as varchar(32)) from dual",
@@ -65,7 +65,7 @@ fn temporary_and_named_prepared_queries_bind_values() {
 
 #[test]
 fn named_binds_require_exact_parameter_count() {
-    let Some(mut conn) = setup() else { return };
+    let Some(conn) = setup() else { return };
     let mut stmt = conn
         .prepare("select cast(:first as integer), cast(:second as integer) from dual")
         .expect("prepare should succeed");
@@ -79,7 +79,7 @@ fn named_binds_require_exact_parameter_count() {
 
 #[test]
 fn invalid_named_binds_preserve_nullable_variable_output() {
-    let Some(mut conn) = setup() else { return };
+    let Some(conn) = setup() else { return };
     let mut value = Some(String::from("keep"));
     let mut stmt = conn
         .prepare("begin :value := :value; end;")
@@ -97,7 +97,7 @@ fn invalid_named_binds_preserve_nullable_variable_output() {
 
 #[test]
 fn execute_with_binds_insert_returning_sequence_value() {
-    let Some(mut conn) = setup() else { return };
+    let Some(conn) = setup() else { return };
 
     conn.execute("drop table rust_bind_returning_test purge").ok();
     conn.execute("drop sequence rust_bind_returning_seq").ok();
@@ -133,7 +133,7 @@ fn execute_with_binds_insert_returning_sequence_value() {
 
 #[test]
 fn nullable_fixed_output_binds_write_back_null_and_values() {
-    let Some(mut conn) = setup() else { return };
+    let Some(conn) = setup() else { return };
 
     let mut b: Option<bool> = None;
     let mut i8_value: Option<i8> = None;
@@ -275,7 +275,7 @@ fn nullable_fixed_output_binds_write_back_null_and_values() {
 
 #[test]
 fn nullable_variable_output_uses_explicit_capacity() {
-    let Some(mut conn) = setup() else { return };
+    let Some(conn) = setup() else { return };
 
     let mut value: Option<String> = None;
     conn.prepare("begin :value := 'hello'; end;")
@@ -367,7 +367,7 @@ fn nullable_variable_output_uses_explicit_capacity() {
 
 #[test]
 fn positional_input_binds_all_supported_types() {
-    let Some(mut conn) = setup() else { return };
+    let Some(conn) = setup() else { return };
     let date = conn
         .query_one_map("select date '2024-01-02' from dual", |row| row.get::<Date>(0))
         .unwrap();
@@ -442,7 +442,7 @@ fn positional_input_binds_all_supported_types() {
 
 #[test]
 fn positional_nullable_input_binds_null_for_all_supported_types() {
-    let Some(mut conn) = setup() else { return };
+    let Some(conn) = setup() else { return };
     let mut rows = conn
         .query_with(
             "select cast(? as boolean), cast(? as tinyint), cast(? as smallint), cast(? as integer), \
@@ -489,7 +489,7 @@ fn positional_nullable_input_binds_null_for_all_supported_types() {
 
 #[test]
 fn output_binds_all_fixed_types() {
-    let Some(mut conn) = setup() else { return };
+    let Some(conn) = setup() else { return };
     let mut b = false;
     let mut i8_value = 0_i8;
     let mut i16_value = 0_i16;
@@ -554,7 +554,7 @@ fn output_binds_all_fixed_types() {
 
 #[test]
 fn in_out_updates_fixed_and_variable_types() {
-    let Some(mut conn) = setup() else { return };
+    let Some(conn) = setup() else { return };
     let mut bool_value = false;
     let mut i8_value = 0_i8;
     let mut i16_value = 0_i16;
@@ -618,7 +618,7 @@ fn in_out_updates_fixed_and_variable_types() {
 
 #[test]
 fn prepared_statement_reuses_execute_and_named_statement() {
-    let Some(mut conn) = setup() else { return };
+    let Some(conn) = setup() else { return };
     let mut stmt = conn.prepare("select cast(? as integer) from dual").unwrap();
     for expected in [1_i32, 2_i32, 3_i32] {
         let mut rows = stmt.query([input(expected)]).unwrap();

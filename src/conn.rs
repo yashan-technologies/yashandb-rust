@@ -1,5 +1,7 @@
 //! Blocking connection to a YashanDB instance.
 
+use std::cell::UnsafeCell;
+
 use crate::error::Error;
 use crate::ffi;
 use crate::library;
@@ -14,6 +16,10 @@ use crate::transaction::Transaction;
 /// underlying C handles must not be accessed concurrently from multiple threads.
 pub struct Connection {
     lib: &'static ffi::YacLib,
+    handle: UnsafeCell<ConnectionHandle>,
+}
+
+struct ConnectionHandle {
     env: ffi::EnvHandle,
     dbc: ffi::DbcHandle,
 }
@@ -67,6 +73,20 @@ impl Connection {
         self.lib
     }
 
+    #[inline]
+    fn with_handle<T>(&self, operation: impl FnOnce(&ffi::YacLib, &mut ConnectionHandle) -> T) -> T {
+        // SAFETY: Connection is !Sync, and each FFI call receives exclusive access
+        // to the DBC handle only for the duration of this callback.
+        unsafe { operation(self.lib, &mut *self.handle.get()) }
+    }
+
+    #[inline]
+    fn with_read_handle<T>(&self, operation: impl FnOnce(&ffi::YacLib, &ConnectionHandle) -> T) -> T {
+        // SAFETY: Connection is !Sync. This path only exposes shared handle
+        // references to FFI operations that do not mutate connection state.
+        unsafe { operation(self.lib, &*self.handle.get()) }
+    }
+
     // --- runtime conn attr getters/setters ---
 
     /// Get the connection's auto-commit mode.
@@ -76,7 +96,7 @@ impl Connection {
     /// connection.
     #[inline]
     pub fn auto_commit(&self) -> bool {
-        self.lib.get_conn_auto_commit(&self.dbc)
+        self.with_read_handle(|lib, handle| lib.get_conn_auto_commit(&handle.dbc))
     }
 
     /// Set the connection's auto-commit mode.
@@ -85,7 +105,7 @@ impl Connection {
     /// [`Self::rollback`] for pending work.
     #[inline]
     pub fn set_auto_commit(&mut self, enabled: bool) {
-        self.lib.set_conn_auto_commit(&mut self.dbc, enabled)
+        self.with_handle(|lib, handle| lib.set_conn_auto_commit(&mut handle.dbc, enabled));
     }
 
     /// Commit the current transaction without changing auto-commit mode.
@@ -93,8 +113,8 @@ impl Connection {
     /// Use this to finish work managed directly on a manual-commit connection.
     /// Prefer [`Self::transaction`] when a scoped guard is appropriate.
     #[inline]
-    pub fn commit(&mut self) -> Result<(), Error> {
-        self.lib.commit(&mut self.dbc)
+    pub fn commit(&self) -> Result<(), Error> {
+        self.with_handle(|lib, handle| lib.commit(&mut handle.dbc))
     }
 
     /// Roll back the current transaction without changing auto-commit mode.
@@ -102,8 +122,8 @@ impl Connection {
     /// Use this to discard work managed directly on a manual-commit connection.
     /// Prefer [`Self::transaction`] when a scoped guard is appropriate.
     #[inline]
-    pub fn rollback(&mut self) -> Result<(), Error> {
-        self.lib.rollback(&mut self.dbc)
+    pub fn rollback(&self) -> Result<(), Error> {
+        self.with_handle(|lib, handle| lib.rollback(&mut handle.dbc))
     }
 
     /// Start a scoped guard for the current connection transaction.
@@ -133,7 +153,7 @@ impl Connection {
     /// Get the transaction isolation level.
     #[inline]
     pub fn transaction_isolation(&self) -> TransactionIsolation {
-        match self.lib.get_conn_transaction_isolation(&self.dbc) {
+        match self.with_read_handle(|lib, handle| lib.get_conn_transaction_isolation(&handle.dbc)) {
             ffi::YacTxnIsolation::ReadCommitted => TransactionIsolation::ReadCommitted,
             ffi::YacTxnIsolation::CurrCommitted => TransactionIsolation::CurrentCommitted,
             ffi::YacTxnIsolation::Serializable => TransactionIsolation::Serializable,
@@ -151,13 +171,13 @@ impl Connection {
             TransactionIsolation::CurrentCommitted => ffi::YacTxnIsolation::CurrCommitted,
             TransactionIsolation::Serializable => ffi::YacTxnIsolation::Serializable,
         };
-        self.lib.set_conn_transaction_isolation(&mut self.dbc, level)
+        self.with_handle(|lib, handle| lib.set_conn_transaction_isolation(&mut handle.dbc, level))
     }
 
     /// Get whether heartbeat is enabled.
     #[inline]
     pub fn heartbeat_enabled(&self) -> bool {
-        self.lib.get_conn_heartbeat_enabled(&self.dbc)
+        self.with_read_handle(|lib, handle| lib.get_conn_heartbeat_enabled(&handle.dbc))
     }
 
     /// Get the packet size in bytes.
@@ -165,20 +185,22 @@ impl Connection {
     /// The packet size is fixed at connect time; this only queries it.
     #[inline]
     pub fn packet_size(&self) -> u32 {
-        self.lib.get_conn_packet_size(&self.dbc)
+        self.with_read_handle(|lib, handle| lib.get_conn_packet_size(&handle.dbc))
     }
 
     #[inline]
-    pub(crate) fn alloc_stmt(&mut self) -> Result<ffi::StmtHandle, Error> {
-        self.lib.alloc_stmt(&mut self.dbc)
+    pub(crate) fn alloc_stmt(&self) -> Result<ffi::StmtHandle, Error> {
+        self.with_handle(|lib, handle| lib.alloc_stmt(&mut handle.dbc))
     }
 
     #[inline]
     pub(crate) fn charset_ratios(&self) -> Result<(u32, u32), Error> {
-        Ok((
-            self.lib.get_conn_max_charset_ratio(&self.dbc)?,
-            self.lib.get_conn_max_ncharset_ratio(&self.dbc)?,
-        ))
+        self.with_read_handle(|lib, handle| {
+            Ok((
+                lib.get_conn_max_charset_ratio(&handle.dbc)?,
+                lib.get_conn_max_ncharset_ratio(&handle.dbc)?,
+            ))
+        })
     }
 
     /// Execute non-parameterized SQL that does not return a result set.
@@ -186,24 +208,25 @@ impl Connection {
     /// Returns the affected-row count reported by the server. The count for DDL
     /// and other statements without affected rows is server-defined.
     #[inline]
-    pub fn execute(&mut self, sql: &str) -> Result<ExecResult, Error> {
+    pub fn execute(&self, sql: &str) -> Result<ExecResult, Error> {
         let mut stmt = Statement::new(self)?;
         stmt.direct_execute(sql)
     }
 
     /// Execute non-parameterized SQL that returns a streaming result set.
     ///
-    /// The returned result set exclusively borrows this connection until it is
-    /// dropped or [`ResultSet::finish`]ed. Use [`Self::execute`] for SQL that
-    /// does not return rows.
+    /// The returned result set shares this connection until it is dropped or
+    /// [`ResultSet::finish`]ed. Other statements on the same connection may
+    /// execute while it is active. Use [`Self::execute`] for SQL that does not
+    /// return rows.
     #[inline]
-    pub fn query(&mut self, sql: &str) -> Result<ResultSet<'_, '_>, Error> {
+    pub fn query(&self, sql: &str) -> Result<ResultSet<'_, '_>, Error> {
         Statement::new(self)?.direct_query(sql)
     }
 
     /// Prepare SQL for repeated execution on this connection.
     #[inline]
-    pub fn prepare(&mut self, sql: &str) -> Result<Statement<'_>, Error> {
+    pub fn prepare(&self, sql: &str) -> Result<Statement<'_>, Error> {
         let mut statement = Statement::new(self)?;
         statement.prepare(sql)?;
         Ok(statement)
@@ -214,7 +237,7 @@ impl Connection {
     /// Parameters are supplied as an array, slice, or `Vec` of [`BindParam`]
     /// values.
     #[inline]
-    pub fn execute_with<'a>(&mut self, sql: &str, params: impl AsMut<[BindParam<'a>]>) -> Result<ExecResult, Error> {
+    pub fn execute_with<'a>(&self, sql: &str, params: impl AsMut<[BindParam<'a>]>) -> Result<ExecResult, Error> {
         self.prepare(sql)?.execute(params)
     }
 
@@ -224,7 +247,7 @@ impl Connection {
     /// values.
     #[inline]
     pub fn query_with<'param>(
-        &mut self,
+        &self,
         sql: &str,
         params: impl AsMut<[BindParam<'param>]>,
     ) -> Result<ResultSet<'_, '_>, Error> {
@@ -238,7 +261,7 @@ impl Connection {
     /// `:value` in SQL. Parameters are supplied as an array, slice, or `Vec`.
     #[inline]
     pub fn execute_named_with<'name, 'param>(
-        &mut self,
+        &self,
         sql: &str,
         params: impl AsMut<[NamedBindParam<'name, 'param>]>,
     ) -> Result<ExecResult, Error> {
@@ -251,7 +274,7 @@ impl Connection {
     /// `:value` in SQL. Parameters are supplied as an array, slice, or `Vec`.
     #[inline]
     pub fn query_named_with<'name, 'param>(
-        &mut self,
+        &self,
         sql: &str,
         params: impl AsMut<[NamedBindParam<'name, 'param>]>,
     ) -> Result<ResultSet<'_, '_>, Error> {
@@ -270,7 +293,7 @@ impl Connection {
     /// or mapping fails, that error is returned even when release also fails.
     /// A release failure is returned only after a successful operation.
     pub fn query_one_map<T>(
-        &mut self,
+        &self,
         sql: &str,
         map: impl FnOnce(&crate::result_set::Row<'_>) -> Result<T, Error>,
     ) -> Result<T, Error> {
@@ -297,7 +320,7 @@ impl Connection {
     /// or mapping fails, that error is returned even when release also fails.
     /// A release failure is returned only after a successful operation.
     pub fn query_opt_map<T>(
-        &mut self,
+        &self,
         sql: &str,
         map: impl FnOnce(&crate::result_set::Row<'_>) -> Result<T, Error>,
     ) -> Result<Option<T>, Error> {
@@ -519,7 +542,10 @@ impl ConnectionBuilder {
         }
 
         let (env, dbc) = g.into_handles();
-        Ok(Connection { lib, env, dbc })
+        Ok(Connection {
+            lib,
+            handle: UnsafeCell::new(ConnectionHandle { env, dbc }),
+        })
     }
 }
 
@@ -544,9 +570,11 @@ unsafe impl Send for Connection {}
 impl Drop for Connection {
     #[inline]
     fn drop(&mut self) {
-        self.lib.disconnect(&mut self.dbc);
-        self.lib.free_dbc(&mut self.dbc);
-        self.lib.free_env(&mut self.env);
+        self.with_handle(|lib, handle| {
+            lib.disconnect(&mut handle.dbc);
+            lib.free_dbc(&mut handle.dbc);
+            lib.free_env(&mut handle.env);
+        });
     }
 }
 
