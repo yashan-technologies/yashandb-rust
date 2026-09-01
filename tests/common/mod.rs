@@ -15,6 +15,10 @@
 #![allow(dead_code)]
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+static TEST_OBJECT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Environment variable holding the directory of the yascli client library.
 pub const LIB_HOME_VAR: &str = "YASCLI_HOME";
@@ -57,4 +61,17 @@ pub fn require_library() {
     yashandb::load_library_with_path(&path_str).unwrap_or_else(|e| {
         panic!("failed to load library from {path_str}: {e}");
     });
+}
+
+/// Return a database object name unique to this test process.
+///
+/// Integration test binaries run in separate processes, and the counter keeps
+/// names distinct among concurrently running tests in the same binary.
+pub fn test_object_name(prefix: &str) -> String {
+    let counter = TEST_OBJECT_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let started_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock is before the Unix epoch")
+        .as_millis();
+    format!("rust_{prefix}_{}_{}_{}", std::process::id(), started_at, counter)
 }

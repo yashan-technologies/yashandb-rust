@@ -2,17 +2,12 @@
 
 mod common;
 
-use std::sync::Mutex;
-
-use common::{LIB_HOME_VAR, conn_credentials, require_library};
+use common::{LIB_HOME_VAR, conn_credentials, require_library, test_object_name};
 use yashandb::{
     Connection, Date, Error, IntervalDS, IntervalYM, Number, Time, Timestamp, in_out, input, named, output,
 };
 
-static LIB_LOCK: Mutex<()> = Mutex::new(());
-
 fn setup() -> Option<Connection> {
-    let _guard = LIB_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     if common::lib_path().is_none() {
         eprintln!("skipping: {LIB_HOME_VAR} not set or library missing");
         return None;
@@ -98,19 +93,18 @@ fn invalid_named_binds_preserve_nullable_variable_output() {
 #[test]
 fn execute_with_binds_insert_returning_sequence_value() {
     let Some(conn) = setup() else { return };
+    let table = test_object_name("bind_returning");
+    let sequence = test_object_name("bind_returning_seq");
 
-    conn.execute("drop table rust_bind_returning_test purge").ok();
-    conn.execute("drop sequence rust_bind_returning_seq").ok();
-    conn.execute("create table rust_bind_returning_test (id bigint, name varchar(32))")
+    conn.execute(&format!("create table {table} (id bigint, name varchar(32))"))
         .expect("returning test table should be created");
-    conn.execute("create sequence rust_bind_returning_seq start with 100")
+    conn.execute(&format!("create sequence {sequence} start with 100"))
         .expect("returning test sequence should be created");
 
     let mut returned_id = 0_i64;
     let result = conn
         .execute_with(
-            "insert into rust_bind_returning_test(id, name) values (rust_bind_returning_seq.nextval, ?) \
-             returning id into ?",
+            &format!("insert into {table}(id, name) values ({sequence}.nextval, ?) returning id into ?"),
             [input("returned"), output(&mut returned_id)],
         )
         .expect("parameterized insert returning should succeed");
@@ -118,16 +112,16 @@ fn execute_with_binds_insert_returning_sequence_value() {
     assert_eq!(result.rows_affected(), 1);
     assert_eq!(returned_id, 100);
     assert_eq!(
-        conn.query_one_map("select name from rust_bind_returning_test where id = 100", |row| {
+        conn.query_one_map(&format!("select name from {table} where id = 100"), |row| {
             row.get::<String>(0)
         })
         .unwrap(),
         "returned"
     );
 
-    conn.execute("drop table rust_bind_returning_test purge")
+    conn.execute(&format!("drop table {table} purge"))
         .expect("returning test table should be dropped");
-    conn.execute("drop sequence rust_bind_returning_seq")
+    conn.execute(&format!("drop sequence {sequence}"))
         .expect("returning test sequence should be dropped");
 }
 

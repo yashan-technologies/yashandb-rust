@@ -2,15 +2,10 @@
 
 mod common;
 
-use std::sync::Mutex;
-
-use common::{LIB_HOME_VAR, conn_credentials, require_library};
+use common::{LIB_HOME_VAR, conn_credentials, require_library, test_object_name};
 use yashandb::{Connection, DataType, DataTypeInfo, Date, Error, IntervalDS, IntervalYM, Number, Time, Timestamp};
 
-static LIB_LOCK: Mutex<()> = Mutex::new(());
-
 fn setup() -> Option<Connection> {
-    let _guard = LIB_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     if common::lib_path().is_none() {
         eprintln!("skipping: {LIB_HOME_VAR} not set or library missing");
         return None;
@@ -26,26 +21,29 @@ fn setup() -> Option<Connection> {
 #[test]
 fn execute_and_query_scalars() {
     let Some(conn) = setup() else { return };
-    let result = conn.execute("create temporary table rust_query_test (id integer, name varchar(32))");
+    let table = test_object_name("query");
+    let result = conn.execute(&format!(
+        "create temporary table {table} (id integer, name varchar(32))"
+    ));
     if let Err(Error::Database { .. }) = result {
         // Some server configurations do not permit temporary tables. The query
         // below does not require schema changes and still validates the API.
     } else {
         result.expect("temporary table creation should succeed");
         assert_eq!(
-            conn.execute("insert into rust_query_test values (1, 'one')")
+            conn.execute(&format!("insert into {table} values (1, 'one')"))
                 .expect("insert should succeed")
                 .rows_affected(),
             1
         );
         assert_eq!(
-            conn.execute("update rust_query_test set name = 'two' where id = 1")
+            conn.execute(&format!("update {table} set name = 'two' where id = 1"))
                 .expect("update should succeed")
                 .rows_affected(),
             1
         );
         assert_eq!(
-            conn.execute("delete from rust_query_test where id = 1")
+            conn.execute(&format!("delete from {table} where id = 1"))
                 .expect("delete should succeed")
                 .rows_affected(),
             1

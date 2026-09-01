@@ -2,12 +2,8 @@
 
 mod common;
 
-use std::sync::Mutex;
-
-use common::{conn_credentials, require_library};
+use common::{conn_credentials, require_library, test_object_name};
 use yashandb::{Connection, Error, input, output};
-
-static LIB_LOCK: Mutex<()> = Mutex::new(());
 
 fn connection() -> Option<Connection> {
     let (url, user, password) = conn_credentials()?;
@@ -17,7 +13,6 @@ fn connection() -> Option<Connection> {
 
 #[test]
 fn temporary_blob_supports_positioned_io() {
-    let _lock = LIB_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let Some(conn) = connection() else {
         eprintln!("skipping: LOB integration environment is not configured");
         return;
@@ -40,7 +35,6 @@ fn temporary_blob_supports_positioned_io() {
 
 #[test]
 fn read_to_end_reads_multiple_blob_chunks() {
-    let _lock = LIB_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let Some(conn) = connection() else {
         eprintln!("skipping: LOB integration environment is not configured");
         return;
@@ -57,7 +51,6 @@ fn read_to_end_reads_multiple_blob_chunks() {
 
 #[test]
 fn temporary_clob_uses_character_offsets_and_utf8() {
-    let _lock = LIB_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let Some(conn) = connection() else {
         eprintln!("skipping: LOB integration environment is not configured");
         return;
@@ -76,7 +69,6 @@ fn temporary_clob_uses_character_offsets_and_utf8() {
 
 #[test]
 fn read_to_string_reads_multiple_clob_chunks() {
-    let _lock = LIB_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let Some(conn) = connection() else {
         eprintln!("skipping: LOB integration environment is not configured");
         return;
@@ -93,28 +85,28 @@ fn read_to_string_reads_multiple_clob_chunks() {
 
 #[test]
 fn multiple_lobs_bind_as_parameters() {
-    let _lock = LIB_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let Some(conn) = connection() else {
         eprintln!("skipping: LOB integration environment is not configured");
         return;
     };
+    let table = test_object_name("lob_bind");
     let mut blob = conn.temporary_blob().unwrap();
     let mut clob = conn.temporary_clob().unwrap();
     blob.append(&[0xCA, 0xFE]).unwrap();
     clob.append("payload").unwrap();
-    conn.execute("begin execute immediate 'create table rust_lob_bind_test (b blob, c clob)'; exception when others then null; end;").unwrap();
+    conn.execute(&format!("create table {table} (b blob, c clob)")).unwrap();
     conn.execute_with(
-        "insert into rust_lob_bind_test (b, c) values (?, ?)",
+        &format!("insert into {table} (b, c) values (?, ?)"),
         [input(&blob), input(&clob)],
     )
     .unwrap();
     conn.execute_with(
-        "insert into rust_lob_bind_test (b, c) values (?, ?)",
+        &format!("insert into {table} (b, c) values (?, ?)"),
         [input(Some(&blob)), input(Some(&clob))],
     )
     .unwrap();
     conn.execute_with(
-        "insert into rust_lob_bind_test (b, c) values (?, ?)",
+        &format!("insert into {table} (b, c) values (?, ?)"),
         [input(None::<&yashandb::Blob<'_>>), input(None::<&yashandb::Clob<'_>>)],
     )
     .unwrap();
@@ -123,25 +115,19 @@ fn multiple_lobs_bind_as_parameters() {
     assert!(clob.is_temporary());
     blob.finish().unwrap();
     clob.finish().unwrap();
-    conn.execute("delete from rust_lob_bind_test").unwrap();
+    conn.execute(&format!("drop table {table}")).unwrap();
     conn.commit().unwrap();
-    conn.execute("drop table rust_lob_bind_test").ok();
-    conn.commit().ok();
 }
 
 #[test]
 fn query_lobs_can_be_read_before_result_set_finish() {
-    let _lock = LIB_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let Some(conn) = connection() else {
         eprintln!("skipping: LOB integration environment is not configured");
         return;
     };
-    conn.execute("begin execute immediate 'drop table rust_lob_query_test'; exception when others then null; end;")
+    let table = test_object_name("lob_query");
+    conn.execute(&format!("create table {table} (id integer, b blob, c clob, n nclob)"))
         .unwrap();
-    conn.execute("create table rust_lob_query_test (id integer, b blob, c clob, n nclob)")
-        .unwrap();
-    conn.commit().unwrap();
-    conn.execute("delete from rust_lob_query_test").unwrap();
     conn.commit().unwrap();
 
     let mut blob = conn.temporary_blob().unwrap();
@@ -151,12 +137,12 @@ fn query_lobs_can_be_read_before_result_set_finish() {
     assert_ne!(first_text.len(), first_text.encode_utf16().count());
     clob.append(first_text).unwrap();
     conn.execute_with(
-        "insert into rust_lob_query_test (id, b, c, n) values (?, ?, ?, ?)",
+        &format!("insert into {table} (id, b, c, n) values (?, ?, ?, ?)"),
         [input(1_i32), input(&blob), input(&clob), input(&clob)],
     )
     .unwrap();
     conn.execute_with(
-        "insert into rust_lob_query_test (id, b, c, n) values (?, ?, ?, ?)",
+        &format!("insert into {table} (id, b, c, n) values (?, ?, ?, ?)"),
         [
             input(2_i32),
             input(None::<&yashandb::Blob<'_>>),
@@ -172,7 +158,7 @@ fn query_lobs_can_be_read_before_result_set_finish() {
     assert_ne!(second_text.len(), second_text.encode_utf16().count());
     clob.append(second_text).unwrap();
     conn.execute_with(
-        "insert into rust_lob_query_test (id, b, c, n) values (?, ?, ?, ?)",
+        &format!("insert into {table} (id, b, c, n) values (?, ?, ?, ?)"),
         [input(3_i32), input(&blob), input(&clob), input(&clob)],
     )
     .unwrap();
@@ -181,7 +167,7 @@ fn query_lobs_can_be_read_before_result_set_finish() {
     drop(clob);
 
     let mut rows = conn
-        .query("select id, b, c, n from rust_lob_query_test order by id")
+        .query(&format!("select id, b, c, n from {table} order by id"))
         .unwrap();
     {
         let row = rows.fetch().unwrap().unwrap();
@@ -226,33 +212,27 @@ fn query_lobs_can_be_read_before_result_set_finish() {
     assert!(rows.fetch().unwrap().is_none());
     rows.finish().unwrap();
 
-    conn.execute("delete from rust_lob_query_test").unwrap();
-    conn.commit().unwrap();
-    conn.execute("drop table rust_lob_query_test").unwrap();
+    conn.execute(&format!("drop table {table}")).unwrap();
     conn.commit().unwrap();
 }
 
 #[test]
 fn query_lobs_survive_later_fetch_and_result_set_finish() {
-    let _lock = LIB_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let Some(conn) = connection() else {
         eprintln!("skipping: LOB integration environment is not configured");
         return;
     };
 
-    conn.execute("begin execute immediate 'drop table rust_lob_lifetime_test'; exception when others then null; end;")
+    let table = test_object_name("lob_lifetime");
+    conn.execute(&format!("create table {table} (id integer, b blob, c clob)"))
         .unwrap();
-    conn.execute("create table rust_lob_lifetime_test (id integer, b blob, c clob)")
+    conn.execute(&format!("insert into {table} values (1, hextoraw('010203'), '第一行')"))
         .unwrap();
-    conn.execute("insert into rust_lob_lifetime_test values (1, hextoraw('010203'), '第一行')")
-        .unwrap();
-    conn.execute("insert into rust_lob_lifetime_test values (2, hextoraw('A0B0C0'), '第二行')")
+    conn.execute(&format!("insert into {table} values (2, hextoraw('A0B0C0'), '第二行')"))
         .unwrap();
     conn.commit().unwrap();
 
-    let mut rows = conn
-        .query("select b, c from rust_lob_lifetime_test order by id")
-        .unwrap();
+    let mut rows = conn.query(&format!("select b, c from {table} order by id")).unwrap();
     let mut lobs = Vec::new();
     while let Some(row) = rows.fetch().unwrap() {
         let blob = row.get::<yashandb::Blob<'_>>(0).unwrap();
@@ -274,15 +254,12 @@ fn query_lobs_survive_later_fetch_and_result_set_finish() {
         assert_eq!(clob_value, expected_clob);
     }
 
-    conn.execute("delete from rust_lob_lifetime_test").unwrap();
-    conn.commit().unwrap();
-    conn.execute("drop table rust_lob_lifetime_test").unwrap();
+    conn.execute(&format!("drop table {table}")).unwrap();
     conn.commit().unwrap();
 }
 
 #[test]
 fn lob_output_binds_non_nullable_and_nullable_values() {
-    let _lock = LIB_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let Some(conn) = connection() else {
         eprintln!("skipping: LOB integration environment is not configured");
         return;

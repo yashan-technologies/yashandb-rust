@@ -6,17 +6,10 @@
 
 mod common;
 
-use std::sync::Mutex;
-
 use common::{LIB_HOME_VAR, conn_credentials, require_library};
-
-/// Serializes the connect tests in this binary. The library is a process-global
-/// singleton, so tests that touch it must not run concurrently with each other.
-static LIB_LOCK: Mutex<()> = Mutex::new(());
 
 /// Load the library and return connection credentials, or `None` to skip.
 fn setup() -> Option<(String, String, String)> {
-    let _g = LIB_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     if common::lib_path().is_none() {
         eprintln!("skipping: {LIB_HOME_VAR} not set or library missing");
         return None;
@@ -90,10 +83,7 @@ fn connect_concurrent() {
         eprintln!("{}", skip_msg());
         return;
     };
-    // `setup` already loaded the library, so the concurrent `connect` calls
-    // below take the already-initialized path in `library()` and never race the
-    // lazy first load. Serializing on `LIB_LOCK` at the top of each test keeps
-    // the whole binary from touching the global library state concurrently.
+    // Concurrent calls are supported, including a concurrent lazy first load.
     let handles: Vec<_> = (0..4)
         .map(|_| {
             let url = url.clone();

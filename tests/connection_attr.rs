@@ -6,18 +6,11 @@
 
 mod common;
 
-use std::sync::Mutex;
-
 use common::{LIB_HOME_VAR, conn_credentials, require_library};
 use yashandb::{Connection, TransactionIsolation};
 
-/// Serializes the tests in this binary. The library is a process-global
-/// singleton, so tests that touch it must not run concurrently with each other.
-static LIB_LOCK: Mutex<()> = Mutex::new(());
-
 /// Load the library and return connection credentials, or `None` to skip.
 fn setup() -> Option<(String, String, String)> {
-    let _g = LIB_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     if common::lib_path().is_none() {
         eprintln!("skipping: {LIB_HOME_VAR} not set or library missing");
         return None;
