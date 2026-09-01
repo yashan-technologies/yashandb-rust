@@ -51,11 +51,21 @@ pub enum Error {
         /// The database type reported for the column.
         actual: DataType,
     },
+    /// An owned value was already transferred from this result column.
+    ColumnValueTransferred {
+        /// The zero-based column index whose value was transferred.
+        index: usize,
+    },
     /// Bytes returned by the YashanDB C client library are not valid UTF-8 in
     /// the indicated context.
     InvalidEncoding {
         /// The value context in which decoding failed.
         context: &'static str,
+    },
+    /// A LOB is too large to materialize in process memory.
+    LobTooLarge {
+        /// The length reported by the database.
+        length: u64,
     },
     /// A result column cannot be represented by this version of the driver.
     UnsupportedColumnType {
@@ -96,7 +106,9 @@ impl fmt::Display for Error {
                 expected,
                 actual,
             } => write!(f, "column {index} has type {actual:?}, not {expected}"),
+            Error::ColumnValueTransferred { index } => write!(f, "column {index} value was already transferred"),
             Error::InvalidEncoding { context } => write!(f, "invalid UTF-8 in {context}"),
+            Error::LobTooLarge { length } => write!(f, "LOB length {length} cannot be represented in process memory"),
             Error::UnsupportedColumnType { index, name, data_type } => {
                 write!(f, "unsupported column type {data_type:?} for column {index} ({name})")
             }
@@ -156,6 +168,10 @@ mod tests {
             "column named \"missing\" was not found"
         );
         assert_eq!(Error::NullValue { index: 1 }.to_string(), "column 1 is NULL");
+        assert_eq!(
+            Error::ColumnValueTransferred { index: 1 }.to_string(),
+            "column 1 value was already transferred"
+        );
         assert_eq!(
             Error::InvalidEncoding { context: "column name" }.to_string(),
             "invalid UTF-8 in column name"

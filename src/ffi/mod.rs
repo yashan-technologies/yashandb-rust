@@ -3,6 +3,7 @@
 mod attr;
 mod conn;
 mod diag;
+mod lob;
 mod raw;
 mod stmt;
 
@@ -16,7 +17,8 @@ use crate::load::{Loaded, MAIN_LIB_NAME};
 use raw::*;
 
 pub use conn::{DbcHandle, EnvHandle};
-pub use raw::{YacCharsetCode, YacExtType, YacTxnIsolation, YacType};
+pub use lob::LobLocator;
+pub use raw::{YacCharsetCode, YacExtType, YacTempLobType, YacTxnIsolation, YacType};
 pub use stmt::{ParameterBinding, ParameterValue, StmtHandle};
 
 pub const NULL_DATA: i32 = -1;
@@ -49,6 +51,17 @@ pub struct YacLib {
     bind_column: YacBindColumn,
     num_result_cols: YacNumResultCols,
     col_attribute: YacColAttribute,
+    lob_desc_alloc2: YacLobDescAlloc2,
+    lob_desc_free2: YacLobDescFree2,
+    lob_get_chunk_size: YacLobGetChunkSize,
+    lob_get_length: YacLobGetLength,
+    lob_free_temporary: YacLobFreeTemporary,
+    lob_is_temporary: YacLobIsTemporary,
+    lob_trim: YacLobTrim,
+    lob_create_temporary2: YacLobCreateTemporary2,
+    lob_write_append: YacLobWriteAppend,
+    lob_write2: YacLobWrite2,
+    lob_read2: YacLobRead2,
 }
 
 impl YacLib {
@@ -77,6 +90,17 @@ impl YacLib {
         let bind_column = try_load_symbol(&loaded.lib, c"yacBindColumn")?;
         let num_result_cols = try_load_symbol(&loaded.lib, c"yacNumResultCols")?;
         let col_attribute = try_load_symbol(&loaded.lib, c"yacColAttribute")?;
+        let lob_desc_alloc2 = try_load_symbol(&loaded.lib, c"yacLobDescAlloc2")?;
+        let lob_desc_free2 = try_load_symbol(&loaded.lib, c"yacLobDescFree2")?;
+        let lob_get_chunk_size = try_load_symbol(&loaded.lib, c"yacLobGetChunkSize")?;
+        let lob_get_length = try_load_symbol(&loaded.lib, c"yacLobGetLength")?;
+        let lob_free_temporary = try_load_symbol(&loaded.lib, c"yacLobFreeTemporary")?;
+        let lob_is_temporary = try_load_symbol(&loaded.lib, c"yacLobIsTemporary")?;
+        let lob_trim = try_load_symbol(&loaded.lib, c"yacLobTrim")?;
+        let lob_create_temporary2 = try_load_symbol(&loaded.lib, c"yacLobCreateTemporary2")?;
+        let lob_write_append = try_load_symbol(&loaded.lib, c"yacLobWriteAppend")?;
+        let lob_write2 = try_load_symbol(&loaded.lib, c"yacLobWrite2")?;
+        let lob_read2 = try_load_symbol(&loaded.lib, c"yacLobRead2")?;
 
         Ok(Self {
             loaded,
@@ -102,6 +126,17 @@ impl YacLib {
             bind_column,
             num_result_cols,
             col_attribute,
+            lob_desc_alloc2,
+            lob_desc_free2,
+            lob_get_chunk_size,
+            lob_get_length,
+            lob_free_temporary,
+            lob_is_temporary,
+            lob_trim,
+            lob_create_temporary2,
+            lob_write_append,
+            lob_write2,
+            lob_read2,
         })
     }
 

@@ -26,6 +26,7 @@ pub type YacDate = i64;
 pub type YacShortTime = i64;
 pub type YacYMInterval = i32;
 pub type YacDSInterval = i64;
+pub type YacBool = u8;
 
 // --- C enums ---
 
@@ -113,9 +114,20 @@ pub enum YacExtType {
     Char = 24,
     VarChar = 26,
     Binary = 28,
+    Clob = 29,
+    Blob = 30,
+    NClob = 33,
     Char2 = 100,
     Varchar2 = 101,
     Binary2 = 102,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(i32)]
+pub enum YacTempLobType {
+    Blob = 0,
+    Clob = 1,
+    NClob = 2,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -211,6 +223,12 @@ pub enum YacTxnIsolation {
 pub struct YacTextPos {
     pub line: YacInt32,
     pub column: YacInt32,
+}
+
+/// Opaque client-side LOB locator descriptor.
+#[repr(C)]
+pub struct YacLobLocator {
+    _private: [u8; 0],
 }
 
 // --- Function pointer types ---
@@ -329,6 +347,56 @@ pub type YacColAttribute = unsafe extern "C" fn(
     value: *mut c_void,
     buf_len: YacInt32,
     string_length: *mut YacInt32,
+) -> YacResult;
+
+pub type YacLobDescAlloc2 = unsafe extern "C" fn(h_conn: YacHandle, desc: *mut *mut YacLobLocator) -> YacResult;
+
+pub type YacLobDescFree2 = unsafe extern "C" fn(desc: *mut YacLobLocator) -> YacResult;
+
+pub type YacLobGetChunkSize =
+    unsafe extern "C" fn(h_conn: YacHandle, locator: *mut YacLobLocator, chunk_size: *mut YacUint16) -> YacResult;
+
+pub type YacLobGetLength =
+    unsafe extern "C" fn(h_conn: YacHandle, locator: *mut YacLobLocator, length: *mut YacUint64) -> YacResult;
+
+pub type YacLobFreeTemporary = unsafe extern "C" fn(h_conn: YacHandle, locator: *mut YacLobLocator) -> YacResult;
+
+pub type YacLobIsTemporary =
+    unsafe extern "C" fn(h_conn: YacHandle, locator: *mut YacLobLocator, is_temporary: *mut YacBool) -> YacResult;
+
+pub type YacLobTrim =
+    unsafe extern "C" fn(h_conn: YacHandle, locator: *mut YacLobLocator, new_len: *mut YacUint64) -> YacResult;
+
+pub type YacLobCreateTemporary2 =
+    unsafe extern "C" fn(h_conn: YacHandle, locator: *mut YacLobLocator, lob_type: YacTempLobType) -> YacResult;
+
+pub type YacLobWriteAppend = unsafe extern "C" fn(
+    h_conn: YacHandle,
+    locator: *mut YacLobLocator,
+    byte_size: *mut YacUint64,
+    char_size: *mut YacUint64,
+    buffer: *mut YacUint8,
+    buffer_len: YacUint64,
+) -> YacResult;
+
+pub type YacLobWrite2 = unsafe extern "C" fn(
+    h_conn: YacHandle,
+    locator: *mut YacLobLocator,
+    byte_size: *mut YacUint64,
+    char_size: *mut YacUint64,
+    offset: YacUint64,
+    buffer: *mut YacUint8,
+    buffer_len: YacUint64,
+) -> YacResult;
+
+pub type YacLobRead2 = unsafe extern "C" fn(
+    h_conn: YacHandle,
+    locator: *mut YacLobLocator,
+    byte_size: *mut YacUint64,
+    char_size: *mut YacUint64,
+    offset: YacUint64,
+    buffer: *mut YacUint8,
+    buffer_len: YacUint64,
 ) -> YacResult;
 
 #[cfg(test)]

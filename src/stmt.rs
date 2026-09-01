@@ -66,7 +66,10 @@ impl<'conn> Statement<'conn> {
     /// [`crate::input`] for input values, [`crate::output`] for output targets, and
     /// [`crate::in_out`] for input/output targets.
     #[inline]
-    pub fn execute<'a>(&mut self, mut params: impl AsMut<[BindParam<'a>]>) -> Result<ExecResult, Error> {
+    pub fn execute<'param>(&mut self, mut params: impl AsMut<[BindParam<'conn, 'param>]>) -> Result<ExecResult, Error>
+    where
+        'conn: 'param,
+    {
         self.execute_params(params.as_mut(), false)
     }
 
@@ -78,8 +81,11 @@ impl<'conn> Statement<'conn> {
     #[inline]
     pub fn execute_named<'name, 'param>(
         &mut self,
-        mut params: impl AsMut<[NamedBindParam<'name, 'param>]>,
-    ) -> Result<ExecResult, Error> {
+        mut params: impl AsMut<[NamedBindParam<'conn, 'name, 'param>]>,
+    ) -> Result<ExecResult, Error>
+    where
+        'conn: 'param,
+    {
         self.execute_named_params(params.as_mut(), false)
     }
 
@@ -95,10 +101,10 @@ impl<'conn> Statement<'conn> {
     #[inline]
     pub fn query<'stmt, 'param>(
         &'stmt mut self,
-        mut params: impl AsMut<[BindParam<'param>]>,
+        mut params: impl AsMut<[BindParam<'conn, 'param>]>,
     ) -> Result<ResultSet<'conn, 'stmt>, Error>
     where
-        'conn: 'stmt,
+        'conn: 'stmt + 'param,
     {
         self.execute_params(params.as_mut(), true)?;
         ResultSet::from_borrowed(self)
@@ -111,10 +117,10 @@ impl<'conn> Statement<'conn> {
     #[inline]
     pub fn query_named<'stmt, 'name, 'param>(
         &'stmt mut self,
-        mut params: impl AsMut<[NamedBindParam<'name, 'param>]>,
+        mut params: impl AsMut<[NamedBindParam<'conn, 'name, 'param>]>,
     ) -> Result<ResultSet<'conn, 'stmt>, Error>
     where
-        'conn: 'stmt,
+        'conn: 'stmt + 'param,
     {
         self.execute_named_params(params.as_mut(), true)?;
         ResultSet::from_borrowed(self)
@@ -123,10 +129,10 @@ impl<'conn> Statement<'conn> {
     #[inline]
     pub(crate) fn query_owned<'stmt, 'param>(
         mut self,
-        params: &mut [BindParam<'param>],
+        params: &mut [BindParam<'conn, 'param>],
     ) -> Result<ResultSet<'conn, 'stmt>, Error>
     where
-        'conn: 'stmt,
+        'conn: 'stmt + 'param,
     {
         self.execute_params(params, true)?;
         ResultSet::from_stmt(self)
@@ -135,16 +141,23 @@ impl<'conn> Statement<'conn> {
     #[inline]
     pub(crate) fn query_named_owned<'stmt, 'name, 'param>(
         mut self,
-        params: &mut [NamedBindParam<'name, 'param>],
+        params: &mut [NamedBindParam<'conn, 'name, 'param>],
     ) -> Result<ResultSet<'conn, 'conn>, Error>
     where
-        'conn: 'stmt,
+        'conn: 'stmt + 'param,
     {
         self.execute_named_params(params, true)?;
         ResultSet::from_stmt(self)
     }
 
-    fn execute_params(&mut self, params: &mut [BindParam<'_>], query: bool) -> Result<ExecResult, Error> {
+    fn execute_params<'param>(
+        &mut self,
+        params: &mut [BindParam<'conn, 'param>],
+        query: bool,
+    ) -> Result<ExecResult, Error>
+    where
+        'conn: 'param,
+    {
         self.ensure_ready()?;
 
         let expected = self.conn.lib().num_params(&self.stmt)?;
@@ -156,7 +169,7 @@ impl<'conn> Statement<'conn> {
         }
 
         for (id, param) in (1..=expected).zip(params.iter_mut()) {
-            let binding = param.binding();
+            let binding = param.binding(self.conn)?;
             self.conn.lib().bind_parameter(&mut self.stmt, id, binding)?;
         }
 
@@ -186,11 +199,14 @@ impl<'conn> Statement<'conn> {
         }
     }
 
-    fn execute_named_params(
+    fn execute_named_params<'name, 'param>(
         &mut self,
-        params: &mut [NamedBindParam<'_, '_>],
+        params: &mut [NamedBindParam<'conn, 'name, 'param>],
         query: bool,
-    ) -> Result<ExecResult, Error> {
+    ) -> Result<ExecResult, Error>
+    where
+        'conn: 'param,
+    {
         self.ensure_ready()?;
 
         for index in 0..params.len() {
@@ -212,7 +228,7 @@ impl<'conn> Statement<'conn> {
 
         for param in params.iter_mut() {
             let (name, param) = param.parts_mut();
-            let binding = param.binding();
+            let binding = param.binding(self.conn)?;
             self.conn.lib().bind_parameter_by_name(&mut self.stmt, name, binding)?;
         }
 
@@ -332,6 +348,9 @@ impl<'conn> Statement<'conn> {
             YacType::Binary => DataTypeInfo::Binary {
                 size: self.column_size(id)?,
             },
+            YacType::Blob => DataTypeInfo::Blob,
+            YacType::Clob => DataTypeInfo::Clob,
+            YacType::NClob => DataTypeInfo::Nclob,
             value => DataTypeInfo::Other(value as u8),
         };
 
@@ -396,6 +415,11 @@ impl<'conn> Statement<'conn> {
     #[inline]
     pub(crate) fn charset_ratios(&self) -> Result<(u32, u32), Error> {
         self.conn.charset_ratios()
+    }
+
+    #[inline]
+    pub(crate) fn connection(&self) -> &'conn Connection {
+        self.conn
     }
 
     #[inline]

@@ -48,6 +48,34 @@ impl<'conn> Transaction<'conn> {
         self.conn.execute(sql)
     }
 
+    /// Create an empty temporary binary LOB owned by this transaction.
+    #[inline]
+    pub fn temporary_blob(&self) -> Result<crate::Blob<'_>, Error> {
+        self.conn.temporary_blob()
+    }
+
+    /// Create an empty temporary character LOB owned by this transaction.
+    #[inline]
+    pub fn temporary_clob(&self) -> Result<crate::Clob<'_>, Error> {
+        self.conn.temporary_clob()
+    }
+
+    /// Allocate a BLOB locator for a non-nullable output parameter.
+    ///
+    /// See [`Connection::output_blob`].
+    #[inline]
+    pub fn output_blob(&self) -> Result<crate::Blob<'_>, Error> {
+        self.conn.output_blob()
+    }
+
+    /// Allocate a CLOB locator for a non-nullable output parameter.
+    ///
+    /// See [`Connection::output_clob`].
+    #[inline]
+    pub fn output_clob(&self) -> Result<crate::Clob<'_>, Error> {
+        self.conn.output_clob()
+    }
+
     /// Execute non-parameterized SQL that returns a streaming result set.
     ///
     /// See [`Connection::query`] for query semantics.
@@ -73,11 +101,14 @@ impl<'conn> Transaction<'conn> {
     ///
     /// See [`Connection::execute_with`] for parameter binding semantics.
     #[inline]
-    pub fn execute_with<'param>(
-        &self,
+    pub fn execute_with<'txn, 'param>(
+        &'txn self,
         sql: &str,
-        params: impl AsMut<[BindParam<'param>]>,
-    ) -> Result<ExecResult, Error> {
+        params: impl AsMut<[BindParam<'txn, 'param>]>,
+    ) -> Result<ExecResult, Error>
+    where
+        'txn: 'param,
+    {
         self.conn.execute_with(sql, params)
     }
 
@@ -87,11 +118,14 @@ impl<'conn> Transaction<'conn> {
     ///
     /// The result set borrows this transaction until it is finished or dropped.
     #[inline]
-    pub fn query_with<'param>(
-        &self,
+    pub fn query_with<'txn, 'param>(
+        &'txn self,
         sql: &str,
-        params: impl AsMut<[BindParam<'param>]>,
-    ) -> Result<ResultSet<'_, '_>, Error> {
+        params: impl AsMut<[BindParam<'txn, 'param>]>,
+    ) -> Result<ResultSet<'txn, 'txn>, Error>
+    where
+        'txn: 'param,
+    {
         self.conn.query_with(sql, params)
     }
 
@@ -99,11 +133,14 @@ impl<'conn> Transaction<'conn> {
     ///
     /// See [`Connection::execute_named_with`] for named parameter binding semantics.
     #[inline]
-    pub fn execute_named_with<'name, 'param>(
-        &self,
+    pub fn execute_named_with<'txn, 'name, 'param>(
+        &'txn self,
         sql: &str,
-        params: impl AsMut<[NamedBindParam<'name, 'param>]>,
-    ) -> Result<ExecResult, Error> {
+        params: impl AsMut<[NamedBindParam<'txn, 'name, 'param>]>,
+    ) -> Result<ExecResult, Error>
+    where
+        'txn: 'param,
+    {
         self.conn.execute_named_with(sql, params)
     }
 
@@ -114,11 +151,14 @@ impl<'conn> Transaction<'conn> {
     ///
     /// The result set borrows this transaction until it is finished or dropped.
     #[inline]
-    pub fn query_named_with<'name, 'param>(
-        &self,
+    pub fn query_named_with<'txn, 'name, 'param>(
+        &'txn self,
         sql: &str,
-        params: impl AsMut<[NamedBindParam<'name, 'param>]>,
-    ) -> Result<ResultSet<'_, '_>, Error> {
+        params: impl AsMut<[NamedBindParam<'txn, 'name, 'param>]>,
+    ) -> Result<ResultSet<'txn, 'txn>, Error>
+    where
+        'txn: 'param,
+    {
         self.conn.query_named_with(sql, params)
     }
 
@@ -130,7 +170,7 @@ impl<'conn> Transaction<'conn> {
     pub fn query_one_map<T>(
         &self,
         sql: &str,
-        map: impl FnOnce(&crate::result_set::Row<'_>) -> Result<T, Error>,
+        map: impl FnOnce(&crate::result_set::Row<'_, '_>) -> Result<T, Error>,
     ) -> Result<T, Error> {
         self.conn.query_one_map(sql, map)
     }
@@ -143,7 +183,7 @@ impl<'conn> Transaction<'conn> {
     pub fn query_opt_map<T>(
         &self,
         sql: &str,
-        map: impl FnOnce(&crate::result_set::Row<'_>) -> Result<T, Error>,
+        map: impl FnOnce(&crate::result_set::Row<'_, '_>) -> Result<T, Error>,
     ) -> Result<Option<T>, Error> {
         self.conn.query_opt_map(sql, map)
     }

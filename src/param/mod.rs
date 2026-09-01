@@ -4,6 +4,7 @@ mod input;
 mod named;
 mod output;
 
+use crate::conn::Connection;
 use crate::error::Error;
 use crate::ffi::{ParameterBinding, ParameterValue};
 
@@ -18,15 +19,15 @@ pub use named::{NamedBindParam, named};
 /// list is supplied as an array, slice, or `Vec<BindParam>`. `Option<T>` input
 /// values represent SQL `NULL`, while `Option<T>` output targets can receive
 /// either a value or SQL `NULL`.
-pub struct BindParam<'a> {
-    value: Value<'a>,
+pub struct BindParam<'conn, 'param> {
+    value: Value<'conn, 'param>,
     indicator: i32,
 }
 
-enum Value<'a> {
-    Input(Input<'a>),
-    Output(Output<'a>),
-    InOut(Output<'a>),
+enum Value<'conn, 'param> {
+    Input(Input<'conn, 'param>),
+    Output(Output<'conn, 'param>),
+    InOut(Output<'conn, 'param>),
 }
 
 /// Converts a supported Rust value into an input parameter.
@@ -34,9 +35,9 @@ enum Value<'a> {
 /// Implementations are provided for the driver's supported scalar, date/time,
 /// interval, text, and binary Rust types, including `Option<T>` forms for SQL
 /// `NULL`. This trait is used by [`input`] and is not an extension point.
-pub trait IntoBindParamIn<'a> {
+pub trait IntoBindParamIn<'conn, 'param> {
     /// Convert this value into a parameter.
-    fn into_bind_param_in(self) -> BindParam<'a>;
+    fn into_bind_param_in(self) -> BindParam<'conn, 'param>;
 }
 
 /// Converts a supported mutable Rust target into an output parameter.
@@ -48,9 +49,9 @@ pub trait IntoBindParamIn<'a> {
 /// `output((&mut value, 256))`; `capacity` is the minimum buffer capacity, and
 /// an existing larger allocation may be reused. This trait is not an extension
 /// point.
-pub trait IntoBindParamOut<'a> {
+pub trait IntoBindParamOut<'conn, 'param> {
     /// Convert this target into a parameter.
-    fn into_bind_param_out(self) -> BindParam<'a>;
+    fn into_bind_param_out(self) -> BindParam<'conn, 'param>;
 }
 
 /// Converts a supported mutable Rust target into an input/output parameter.
@@ -58,9 +59,9 @@ pub trait IntoBindParamOut<'a> {
 /// The target supplies the input value before execution and receives the
 /// output value afterward. The same capacity rules as [`IntoBindParamOut`] are
 /// used for variable-size targets. This trait is not an extension point.
-pub trait IntoBindParamInOut<'a> {
+pub trait IntoBindParamInOut<'conn, 'param> {
     /// Convert this target into a parameter.
-    fn into_bind_param_in_out(self) -> BindParam<'a>;
+    fn into_bind_param_in_out(self) -> BindParam<'conn, 'param>;
 }
 
 /// Create an input parameter from a supported Rust value.
@@ -79,19 +80,21 @@ pub trait IntoBindParamInOut<'a> {
 /// | `i64` / `Option<i64>` | `BIGINT` |
 /// | `f32` / `Option<f32>` | `FLOAT` |
 /// | `f64` / `Option<f64>` | `DOUBLE` |
-/// | [`crate::Number`] / `Option<crate::Number>` | `NUMBER` |
-/// | [`crate::Date`] / `Option<crate::Date>` | `DATE` |
-/// | [`crate::Time`] / `Option<crate::Time>` | `SHORTTIME` |
-/// | [`crate::Timestamp`] / `Option<crate::Timestamp>` | `TIMESTAMP` |
-/// | [`crate::IntervalYM`] / `Option<crate::IntervalYM>` | `INTERVAL YEAR TO MONTH` |
-/// | [`crate::IntervalDS`] / `Option<crate::IntervalDS>` | `INTERVAL DAY TO SECOND` |
+/// | [`crate::Number`] / `Option<`[`crate::Number`]`>` | `NUMBER` |
+/// | [`crate::Date`] / `Option<`[`crate::Date`]`>` | `DATE` |
+/// | [`crate::Time`] / `Option<`[`crate::Time`]`>` | `SHORTTIME` |
+/// | [`crate::Timestamp`] / `Option<`[`crate::Timestamp`]`>` | `TIMESTAMP` |
+/// | [`crate::IntervalYM`] / `Option<`[`crate::IntervalYM`]`>` | `INTERVAL YEAR TO MONTH` |
+/// | [`crate::IntervalDS`] / `Option<`[`crate::IntervalDS`]`>` | `INTERVAL DAY TO SECOND` |
 /// | `&str` / `String` and their `Option<T>` forms | `VARCHAR` |
 /// | `&[u8]` / `Vec<u8>` and their `Option<T>` forms | `BINARY` |
+/// | `&`[`crate::Blob`] / `Option<&`[`crate::Blob`]`>` | `BLOB` |
+/// | `&`[`crate::Clob`] / `Option<&`[`crate::Clob`]`>` | `CLOB` |
 ///
 /// `Option<T>` preserves the type inferred from `T` and uses SQL `NULL` when
 /// the value is `None`.
 #[inline]
-pub fn input<'a>(value: impl IntoBindParamIn<'a>) -> BindParam<'a> {
+pub fn input<'conn, 'param>(value: impl IntoBindParamIn<'conn, 'param>) -> BindParam<'conn, 'param> {
     value.into_bind_param_in()
 }
 
@@ -116,21 +119,31 @@ pub fn input<'a>(value: impl IntoBindParamIn<'a>) -> BindParam<'a> {
 /// | `&mut i64` / `&mut Option<i64>` | `BIGINT` |
 /// | `&mut f32` / `&mut Option<f32>` | `FLOAT` |
 /// | `&mut f64` / `&mut Option<f64>` | `DOUBLE` |
-/// | `&mut crate::Number` / `&mut Option<crate::Number>` | `NUMBER` |
-/// | `&mut crate::Date` / `&mut Option<crate::Date>` | `DATE` |
-/// | `&mut crate::Time` / `&mut Option<crate::Time>` | `SHORTTIME` |
-/// | `&mut crate::Timestamp` / `&mut Option<crate::Timestamp>` | `TIMESTAMP` |
-/// | `&mut crate::IntervalYM` / `&mut Option<crate::IntervalYM>` | `INTERVAL YEAR TO MONTH` |
-/// | `&mut crate::IntervalDS` / `&mut Option<crate::IntervalDS>` | `INTERVAL DAY TO SECOND` |
+/// | `&mut `[`crate::Number`] / `&mut Option<`[`crate::Number`]`>` | `NUMBER` |
+/// | `&mut `[`crate::Date`] / `&mut Option<`[`crate::Date`]`>` | `DATE` |
+/// | `&mut `[`crate::Time`] / `&mut Option<`[`crate::Time`]`>` | `SHORTTIME` |
+/// | `&mut `[`crate::Timestamp`] / `&mut Option<`[`crate::Timestamp`]`>` | `TIMESTAMP` |
+/// | `&mut `[`crate::IntervalYM`] / `&mut Option<`[`crate::IntervalYM`]`>` | `INTERVAL YEAR TO MONTH` |
+/// | `&mut `[`crate::IntervalDS`] / `&mut Option<`[`crate::IntervalDS`]`>` | `INTERVAL DAY TO SECOND` |
 /// | `&mut String` | `VARCHAR` |
 /// | `&mut Vec<u8>` | `BINARY` |
 /// | `(&mut Option<String>, usize)` | nullable `VARCHAR` with minimum buffer capacity |
 /// | `(&mut Option<Vec<u8>>, usize)` | nullable `BINARY` with minimum buffer capacity |
+/// | `&mut `[`crate::Blob`] | `BLOB` |
+/// | `&mut `[`crate::Clob`] | `CLOB` |
+/// | `&mut Option<`[`crate::Blob`]`>` | nullable `BLOB` |
+/// | `&mut Option<`[`crate::Clob`]`>` | nullable `CLOB` |
 ///
 /// `Option<T>` targets receive `None` when the database returns SQL `NULL`.
 /// `String` and `Vec<u8>` use their existing capacity as the output limit.
+/// For a pure LOB output, use `&mut Option<crate::Blob>` or
+/// `&mut Option<crate::Clob>`; binding allocates only a client descriptor and
+/// does not create a temporary server LOB.
+/// For a non-nullable pure LOB output, use [`crate::Connection::output_blob`]
+/// or [`crate::Connection::output_clob`] and bind the result with `output`.
+///
 #[inline]
-pub fn output<'a>(target: impl IntoBindParamOut<'a>) -> BindParam<'a> {
+pub fn output<'conn, 'param>(target: impl IntoBindParamOut<'conn, 'param>) -> BindParam<'conn, 'param> {
     target.into_bind_param_out()
 }
 
@@ -150,33 +163,35 @@ pub fn output<'a>(target: impl IntoBindParamOut<'a>) -> BindParam<'a> {
 /// nullable `BIGINT` form. Text and binary targets use `VARCHAR` and `BINARY`;
 /// nullable variable-size targets use `(&mut Option<String>, usize)` or
 /// `(&mut Option<Vec<u8>>, usize)` to provide a minimum buffer capacity.
+/// LOB input/output parameters are not supported. Use [`input`] or [`output`]
+/// for [`crate::Blob`] and [`crate::Clob`].
 #[inline]
-pub fn in_out<'a>(target: impl IntoBindParamInOut<'a>) -> BindParam<'a> {
+pub fn in_out<'conn, 'param>(target: impl IntoBindParamInOut<'conn, 'param>) -> BindParam<'conn, 'param> {
     target.into_bind_param_in_out()
 }
 
-impl<'a> BindParam<'a> {
-    pub(crate) fn binding(&mut self) -> ParameterBinding<'_> {
+impl<'conn, 'param> BindParam<'conn, 'param> {
+    pub(crate) fn binding(&mut self, conn: &'conn Connection) -> Result<ParameterBinding<'_>, Error> {
         let (ext_type, value) = match &mut self.value {
             Value::Input(value) => {
                 let (ty, bytes) = value.native_value();
                 (ty, ParameterValue::Input(bytes))
             }
             Value::Output(value) => {
-                let (ty, bytes) = value.native_value();
+                let (ty, bytes) = value.native_value(conn)?;
                 (ty, ParameterValue::Output(bytes))
             }
             Value::InOut(value) => {
-                let (ty, bytes) = value.native_value();
+                let (ty, bytes) = value.native_value(conn)?;
                 (ty, ParameterValue::InOut(bytes))
             }
         };
 
-        ParameterBinding {
+        Ok(ParameterBinding {
             ext_type,
             value,
             indicator: &mut self.indicator,
-        }
+        })
     }
 
     #[inline]

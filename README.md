@@ -14,6 +14,8 @@ synchronous, blocking connection to a YashanDB instance.
 - **Prepared statements and parameter binding** for positional and named
   parameters, including input, output, and input/output values.
 - **Manual and scoped transactions** with explicit commit and rollback APIs.
+- **Connection-bound BLOB and CLOB locators** with positioned I/O, temporary
+  LOBs, parameter binding, and streaming query extraction.
 
 ## MSRV
 
@@ -131,9 +133,97 @@ query result mapping is:
 | `INTERVAL DAY TO SECOND` | `IntervalDS` / `Option<IntervalDS>` |
 | `CHAR`, `NCHAR`, `VARCHAR`, `NVARCHAR` | `String`, `&str`, or their `Option<T>` forms |
 | `BINARY` | `Vec<u8>`, `&[u8]`, or their `Option<T>` forms |
+| `BLOB` | `Blob` / `Option<Blob>` |
+| `CLOB`, `NCLOB` | `Clob` / `Option<Clob>` |
 
 `TIMESTAMP WITH [LOCAL] TIME ZONE` and unrecognized types remain visible in
 metadata but return an error only if that column is read.
+
+LOB columns are returned as connection-bound locators rather than being
+materialized automatically. `Blob` uses one-based byte offsets and byte
+lengths. `Clob` represents both CLOB and NCLOB and uses one-based character
+offsets and character lengths. Use `read_to_end` or `read_to_string` when
+whole-value materialization is intended. A LOB must be dropped or finished
+before its owning connection is dropped. When a LOB is extracted from a row,
+the locator is transferred out of the result-set binding: the same LOB column
+can be extracted only once for that row. The result set can then fetch later
+rows; transferred locators remain usable and are rebound independently before
+the next fetch. Finish or drop the result set before reusing its prepared
+statement, but transferred LOBs may be read after the result set is finished.
+
+Create temporary LOBs explicitly and bind them as input values:
+
+```rust
+use yashandb::{Connection, Error, input};
+
+fn insert_document(conn: &mut Connection, text: &str, data: &[u8]) -> Result<(), Error> {
+    let mut clob = conn.temporary_clob()?;
+    clob.append(text)?;
+    let mut blob = conn.temporary_blob()?;
+    blob.append(data)?;
+    conn.execute_with(
+        "insert into documents(description, contents) values (?, ?)",
+        [input(&clob), input(&blob)],
+    )?;
+    clob.finish()?;
+    blob.finish()?;
+    Ok(())
+}
+```
+
+Read a LOB locator from a result row:
+
+```rust
+use yashandb::{Blob, Clob, Connection, Error};
+
+fn read_document(conn: &mut Connection) -> Result<(Vec<u8>, String), Error> {
+    let mut rows = conn.query("select contents, description from documents")?;
+    let row = rows.fetch()?.ok_or(Error::RowNotFound)?;
+    let mut blob: Blob<'_> = row.get(0)?;
+    let mut clob: Clob<'_> = row.get(1)?;
+    let mut data = Vec::new();
+    let mut text = String::new();
+    blob.read_to_end(&mut data)?;
+    clob.read_to_string(&mut text)?;
+    drop(blob);
+    drop(clob);
+    rows.finish()?;
+    Ok((data, text))
+}
+```
+
+To retain LOBs from multiple rows, extract them before fetching the next row.
+After the result set is finished, each transferred locator can be read
+independently:
+
+```rust
+use yashandb::{Blob, Clob, Connection, Error};
+
+fn read_all_documents(conn: &mut Connection) -> Result<Vec<(Vec<u8>, String)>, Error> {
+    let mut rows = conn.query("select contents, description from documents order by id")?;
+    let mut lobs: Vec<(Blob<'_>, Clob<'_>)> = Vec::new();
+    while let Some(row) = rows.fetch()? {
+        lobs.push((row.get(0)?, row.get(1)?));
+    }
+    rows.finish()?;
+
+    lobs.into_iter()
+        .map(|(mut blob, mut clob)| {
+            let mut data = Vec::new();
+            let mut text = String::new();
+            blob.read_to_end(&mut data)?;
+            clob.read_to_string(&mut text)?;
+            Ok((data, text))
+        })
+        .collect()
+}
+```
+
+For pure OUT parameters, use `output(&mut Option<Blob>)` or
+`output(&mut Option<Clob>)` for nullable results. For a non-nullable OUT LOB,
+first allocate a client locator with `Connection::output_blob()` or
+`Connection::output_clob()`, then bind it with `output`. LOB input/output
+parameters are not supported; use separate input and output parameters.
 
 Use `execute_with` and `query_with` for parameterized SQL that is executed once.
 Construct values with `input`, `output`, and `in_out`.
@@ -172,7 +262,7 @@ cannot be inferred, for example `input(Option::<i64>::None)`.
 
 The supported parameter mappings are:
 
-| Rust type | YashanDB/YACLI type |
+| Rust parameter | YashanDB/YACLI type |
 |---|---|
 | `bool` | `BOOL` |
 | `i8` | `TINYINT` |
@@ -189,10 +279,15 @@ The supported parameter mappings are:
 | `IntervalDS` | `INTERVAL DAY TO SECOND` |
 | `&str`, `String` | `VARCHAR` |
 | `&[u8]`, `Vec<u8>` | `BINARY` |
+| `&Blob`, `Option<&Blob>` | `BLOB` input |
+| `&Clob`, `Option<&Clob>` | `CLOB` input |
+| `&mut Blob`, `&mut Option<Blob>` | `BLOB` output |
+| `&mut Clob`, `&mut Option<Clob>` | `CLOB` output |
 
 The corresponding `Option<T>` forms keep the same database type and add SQL
-`NULL` handling. The complete accepted forms for `input`, `output`, and
-`in_out` are documented on those functions.
+`NULL` handling. LOB `in_out` parameters are not supported; use `input` for a
+LOB input and `output` for a LOB output. The complete accepted forms for
+`input`, `output`, and `in_out` are documented on those functions.
 
 Named parameters use a NUL-terminated `CString` or `&CStr`. Pass the name
 without the SQL placeholder prefix: `value` corresponds to `:value` in SQL.

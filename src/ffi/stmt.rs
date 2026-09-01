@@ -71,6 +71,9 @@ impl YacLib {
             value,
             indicator,
         } = binding;
+        // LOB bindings intentionally provide a byte view whose address is the
+        // address of a `YacLobLocator *` variable. `parameter_value` preserves
+        // that address when converting the safe representation to the C ABI.
         let (direction, value, bind_size) = parameter_value(value);
         self.try_call(|| unsafe {
             (self.bind_parameter)(
@@ -98,6 +101,8 @@ impl YacLib {
             value,
             indicator,
         } = binding;
+        // See `bind_parameter`: a LOB value is passed as the address of the
+        // locator-pointer variable (`YacLobLocator **`), not locator contents.
         let (direction, value, bind_size) = parameter_value(value);
         self.try_call(|| unsafe {
             (self.bind_parameter_by_name)(
@@ -268,6 +273,9 @@ impl YacLib {
         buffer: &mut [u8],
         indicator: &mut i32,
     ) -> Result<(), Error> {
+        // For a LOB column, `buffer` is a byte view of the locator-pointer
+        // variable. Its address is therefore the `YacLobLocator **` expected by
+        // YACLI, matching the C driver's `&lobLocator` example.
         assert!(buffer.len() <= i32::MAX as usize);
         let len = buffer.len() as i32;
         self.try_call(|| unsafe {

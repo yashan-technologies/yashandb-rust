@@ -1,46 +1,52 @@
 //! Output parameter representation.
 
 use super::{BindParam, IntoBindParamInOut, IntoBindParamOut, Value, bytes_of, indicator};
+use crate::conn::Connection;
 use crate::error::Error;
 use crate::ffi::{NULL_DATA, YacExtType};
 use crate::types::{Date, IntervalDS, IntervalYM, Number, Time, Timestamp, YacNumber, YacTimestamp};
+use crate::{Blob, Clob};
 
-pub(super) enum Output<'a> {
-    Bool(&'a mut bool),
-    BoolNullable(&'a mut Option<bool>, bool),
-    I8(&'a mut i8),
-    I8Nullable(&'a mut Option<i8>, i8),
-    I16(&'a mut i16),
-    I16Nullable(&'a mut Option<i16>, i16),
-    I32(&'a mut i32),
-    I32Nullable(&'a mut Option<i32>, i32),
-    I64(&'a mut i64),
-    I64Nullable(&'a mut Option<i64>, i64),
-    F32(&'a mut f32),
-    F32Nullable(&'a mut Option<f32>, f32),
-    F64(&'a mut f64),
-    F64Nullable(&'a mut Option<f64>, f64),
-    Number(&'a mut Number, YacNumber),
-    NumberNullable(&'a mut Option<Number>, YacNumber),
-    Date(&'a mut Date),
-    DateNullable(&'a mut Option<Date>, Date),
-    Time(&'a mut Time),
-    TimeNullable(&'a mut Option<Time>, Time),
-    Timestamp(&'a mut Timestamp, YacTimestamp),
-    TimestampNullable(&'a mut Option<Timestamp>, YacTimestamp),
-    IntervalYM(&'a mut IntervalYM),
-    IntervalYMNullable(&'a mut Option<IntervalYM>, IntervalYM),
-    IntervalDS(&'a mut IntervalDS),
-    IntervalDSNullable(&'a mut Option<IntervalDS>, IntervalDS),
-    Text(&'a mut String),
-    TextNullable(&'a mut Option<String>, Option<Vec<u8>>, usize),
-    Binary(&'a mut Vec<u8>),
-    BinaryNullable(&'a mut Option<Vec<u8>>, Option<Vec<u8>>, usize),
+pub(super) enum Output<'conn, 'param> {
+    Bool(&'param mut bool),
+    BoolNullable(&'param mut Option<bool>, bool),
+    I8(&'param mut i8),
+    I8Nullable(&'param mut Option<i8>, i8),
+    I16(&'param mut i16),
+    I16Nullable(&'param mut Option<i16>, i16),
+    I32(&'param mut i32),
+    I32Nullable(&'param mut Option<i32>, i32),
+    I64(&'param mut i64),
+    I64Nullable(&'param mut Option<i64>, i64),
+    F32(&'param mut f32),
+    F32Nullable(&'param mut Option<f32>, f32),
+    F64(&'param mut f64),
+    F64Nullable(&'param mut Option<f64>, f64),
+    Number(&'param mut Number, YacNumber),
+    NumberNullable(&'param mut Option<Number>, YacNumber),
+    Date(&'param mut Date),
+    DateNullable(&'param mut Option<Date>, Date),
+    Time(&'param mut Time),
+    TimeNullable(&'param mut Option<Time>, Time),
+    Timestamp(&'param mut Timestamp, YacTimestamp),
+    TimestampNullable(&'param mut Option<Timestamp>, YacTimestamp),
+    IntervalYM(&'param mut IntervalYM),
+    IntervalYMNullable(&'param mut Option<IntervalYM>, IntervalYM),
+    IntervalDS(&'param mut IntervalDS),
+    IntervalDSNullable(&'param mut Option<IntervalDS>, IntervalDS),
+    Text(&'param mut String),
+    TextNullable(&'param mut Option<String>, Option<Vec<u8>>, usize),
+    Binary(&'param mut Vec<u8>),
+    BinaryNullable(&'param mut Option<Vec<u8>>, Option<Vec<u8>>, usize),
+    Blob(&'param mut Blob<'conn>),
+    BlobNullable(&'param mut Option<Blob<'conn>>, Option<Blob<'conn>>),
+    Clob(&'param mut Clob<'conn>),
+    ClobNullable(&'param mut Option<Clob<'conn>>, Option<Clob<'conn>>),
 }
 
-impl Output<'_> {
-    pub(super) fn native_value(&mut self) -> (YacExtType, &mut [u8]) {
-        match self {
+impl<'conn, 'param> Output<'conn, 'param> {
+    pub(super) fn native_value(&mut self, conn: &'conn Connection) -> Result<(YacExtType, &mut [u8]), Error> {
+        let value = match self {
             Output::Bool(v) => (YacExtType::Bool, bytes_of(*v)),
             Output::BoolNullable(_, v) => (YacExtType::Bool, bytes_of(v)),
             Output::I8(v) => (YacExtType::TinyInt, bytes_of(*v)),
@@ -85,7 +91,21 @@ impl Output<'_> {
                     std::slice::from_raw_parts_mut(native.as_mut_ptr(), native.capacity())
                 })
             }
-        }
+            // The mutable bytes are the locator-pointer variable itself. YACLI
+            // receives its address (`YacLobLocator **`) and updates that
+            // variable according to the output binding protocol.
+            Output::Blob(value) => (YacExtType::Blob, value.bind_output()),
+            Output::BlobNullable(_, value) => {
+                let value = value.get_or_insert(Blob::output(conn)?);
+                (YacExtType::Blob, value.bind_output())
+            }
+            Output::Clob(value) => (YacExtType::Clob, value.bind_output()),
+            Output::ClobNullable(_, value) => {
+                let value = value.get_or_insert(Clob::output(conn)?);
+                (YacExtType::Clob, value.bind_output())
+            }
+        };
+        Ok(value)
     }
 
     pub(super) fn complete(&mut self, indicator: i32) -> Result<(), Error> {
@@ -148,12 +168,26 @@ impl Output<'_> {
                     **t = Some(std::mem::take(n));
                 }
             }
-            _ if indicator == NULL_DATA => {
-                return Err(Error::InvalidArgument(
-                    "SQL NULL cannot be written to a non-optional output parameter".into(),
-                ));
+            Output::Blob(_) | Output::Clob(_) => {
+                if indicator == NULL_DATA {
+                    return Err(Error::InvalidArgument(
+                        "SQL NULL cannot be written to a non-optional output LOB".into(),
+                    ));
+                }
             }
-            _ => {}
+            Output::BlobNullable(target, value) => {
+                **target = if indicator == NULL_DATA { None } else { value.take() };
+            }
+            Output::ClobNullable(target, value) => {
+                **target = if indicator == NULL_DATA { None } else { value.take() };
+            }
+            _ => {
+                if indicator == NULL_DATA {
+                    return Err(Error::InvalidArgument(
+                        "SQL NULL cannot be written to a non-optional output parameter".into(),
+                    ));
+                }
+            }
         }
         Ok(())
     }
@@ -185,9 +219,9 @@ fn nullable_binary_buffer(target: &mut Option<Vec<u8>>, capacity: usize) -> Vec<
     native
 }
 
-impl<'a> IntoBindParamOut<'a> for &'a mut bool {
+impl<'conn, 'param> IntoBindParamOut<'conn, 'param> for &'param mut bool {
     #[inline]
-    fn into_bind_param_out(self) -> BindParam<'a> {
+    fn into_bind_param_out(self) -> BindParam<'conn, 'param> {
         BindParam {
             value: Value::Output(Output::Bool(self)),
             indicator: 0,
@@ -195,9 +229,9 @@ impl<'a> IntoBindParamOut<'a> for &'a mut bool {
     }
 }
 
-impl<'a> IntoBindParamInOut<'a> for &'a mut bool {
+impl<'conn, 'param> IntoBindParamInOut<'conn, 'param> for &'param mut bool {
     #[inline]
-    fn into_bind_param_in_out(self) -> BindParam<'a> {
+    fn into_bind_param_in_out(self) -> BindParam<'conn, 'param> {
         BindParam {
             value: Value::InOut(Output::Bool(self)),
             indicator: indicator(size_of::<bool>()),
@@ -205,9 +239,9 @@ impl<'a> IntoBindParamInOut<'a> for &'a mut bool {
     }
 }
 
-impl<'a> IntoBindParamOut<'a> for &'a mut Option<bool> {
+impl<'conn, 'param> IntoBindParamOut<'conn, 'param> for &'param mut Option<bool> {
     #[inline]
-    fn into_bind_param_out(self) -> BindParam<'a> {
+    fn into_bind_param_out(self) -> BindParam<'conn, 'param> {
         BindParam {
             value: Value::Output(Output::BoolNullable(self, false)),
             indicator: 0,
@@ -215,9 +249,9 @@ impl<'a> IntoBindParamOut<'a> for &'a mut Option<bool> {
     }
 }
 
-impl<'a> IntoBindParamInOut<'a> for &'a mut Option<bool> {
+impl<'conn, 'param> IntoBindParamInOut<'conn, 'param> for &'param mut Option<bool> {
     #[inline]
-    fn into_bind_param_in_out(self) -> BindParam<'a> {
+    fn into_bind_param_in_out(self) -> BindParam<'conn, 'param> {
         let (indicator, native) = self
             .as_ref()
             .map_or((NULL_DATA, false), |value| (indicator(size_of::<bool>()), *value));
@@ -228,9 +262,9 @@ impl<'a> IntoBindParamInOut<'a> for &'a mut Option<bool> {
     }
 }
 
-impl<'a> IntoBindParamOut<'a> for &'a mut i8 {
+impl<'conn, 'param> IntoBindParamOut<'conn, 'param> for &'param mut i8 {
     #[inline]
-    fn into_bind_param_out(self) -> BindParam<'a> {
+    fn into_bind_param_out(self) -> BindParam<'conn, 'param> {
         BindParam {
             value: Value::Output(Output::I8(self)),
             indicator: 0,
@@ -238,9 +272,9 @@ impl<'a> IntoBindParamOut<'a> for &'a mut i8 {
     }
 }
 
-impl<'a> IntoBindParamInOut<'a> for &'a mut i8 {
+impl<'conn, 'param> IntoBindParamInOut<'conn, 'param> for &'param mut i8 {
     #[inline]
-    fn into_bind_param_in_out(self) -> BindParam<'a> {
+    fn into_bind_param_in_out(self) -> BindParam<'conn, 'param> {
         BindParam {
             value: Value::InOut(Output::I8(self)),
             indicator: indicator(size_of::<i8>()),
@@ -248,9 +282,9 @@ impl<'a> IntoBindParamInOut<'a> for &'a mut i8 {
     }
 }
 
-impl<'a> IntoBindParamOut<'a> for &'a mut Option<i8> {
+impl<'conn, 'param> IntoBindParamOut<'conn, 'param> for &'param mut Option<i8> {
     #[inline]
-    fn into_bind_param_out(self) -> BindParam<'a> {
+    fn into_bind_param_out(self) -> BindParam<'conn, 'param> {
         BindParam {
             value: Value::Output(Output::I8Nullable(self, 0)),
             indicator: 0,
@@ -258,9 +292,9 @@ impl<'a> IntoBindParamOut<'a> for &'a mut Option<i8> {
     }
 }
 
-impl<'a> IntoBindParamInOut<'a> for &'a mut Option<i8> {
+impl<'conn, 'param> IntoBindParamInOut<'conn, 'param> for &'param mut Option<i8> {
     #[inline]
-    fn into_bind_param_in_out(self) -> BindParam<'a> {
+    fn into_bind_param_in_out(self) -> BindParam<'conn, 'param> {
         let (indicator, native) = self
             .as_ref()
             .map_or((NULL_DATA, 0), |value| (indicator(size_of::<i8>()), *value));
@@ -271,9 +305,9 @@ impl<'a> IntoBindParamInOut<'a> for &'a mut Option<i8> {
     }
 }
 
-impl<'a> IntoBindParamOut<'a> for &'a mut i16 {
+impl<'conn, 'param> IntoBindParamOut<'conn, 'param> for &'param mut i16 {
     #[inline]
-    fn into_bind_param_out(self) -> BindParam<'a> {
+    fn into_bind_param_out(self) -> BindParam<'conn, 'param> {
         BindParam {
             value: Value::Output(Output::I16(self)),
             indicator: 0,
@@ -281,9 +315,9 @@ impl<'a> IntoBindParamOut<'a> for &'a mut i16 {
     }
 }
 
-impl<'a> IntoBindParamInOut<'a> for &'a mut i16 {
+impl<'conn, 'param> IntoBindParamInOut<'conn, 'param> for &'param mut i16 {
     #[inline]
-    fn into_bind_param_in_out(self) -> BindParam<'a> {
+    fn into_bind_param_in_out(self) -> BindParam<'conn, 'param> {
         BindParam {
             value: Value::InOut(Output::I16(self)),
             indicator: indicator(size_of::<i16>()),
@@ -291,9 +325,9 @@ impl<'a> IntoBindParamInOut<'a> for &'a mut i16 {
     }
 }
 
-impl<'a> IntoBindParamOut<'a> for &'a mut Option<i16> {
+impl<'conn, 'param> IntoBindParamOut<'conn, 'param> for &'param mut Option<i16> {
     #[inline]
-    fn into_bind_param_out(self) -> BindParam<'a> {
+    fn into_bind_param_out(self) -> BindParam<'conn, 'param> {
         BindParam {
             value: Value::Output(Output::I16Nullable(self, 0)),
             indicator: 0,
@@ -301,9 +335,9 @@ impl<'a> IntoBindParamOut<'a> for &'a mut Option<i16> {
     }
 }
 
-impl<'a> IntoBindParamInOut<'a> for &'a mut Option<i16> {
+impl<'conn, 'param> IntoBindParamInOut<'conn, 'param> for &'param mut Option<i16> {
     #[inline]
-    fn into_bind_param_in_out(self) -> BindParam<'a> {
+    fn into_bind_param_in_out(self) -> BindParam<'conn, 'param> {
         let (indicator, native) = self
             .as_ref()
             .map_or((NULL_DATA, 0), |value| (indicator(size_of::<i16>()), *value));
@@ -314,9 +348,9 @@ impl<'a> IntoBindParamInOut<'a> for &'a mut Option<i16> {
     }
 }
 
-impl<'a> IntoBindParamOut<'a> for &'a mut i32 {
+impl<'conn, 'param> IntoBindParamOut<'conn, 'param> for &'param mut i32 {
     #[inline]
-    fn into_bind_param_out(self) -> BindParam<'a> {
+    fn into_bind_param_out(self) -> BindParam<'conn, 'param> {
         BindParam {
             value: Value::Output(Output::I32(self)),
             indicator: 0,
@@ -324,9 +358,9 @@ impl<'a> IntoBindParamOut<'a> for &'a mut i32 {
     }
 }
 
-impl<'a> IntoBindParamInOut<'a> for &'a mut i32 {
+impl<'conn, 'param> IntoBindParamInOut<'conn, 'param> for &'param mut i32 {
     #[inline]
-    fn into_bind_param_in_out(self) -> BindParam<'a> {
+    fn into_bind_param_in_out(self) -> BindParam<'conn, 'param> {
         BindParam {
             value: Value::InOut(Output::I32(self)),
             indicator: indicator(size_of::<i32>()),
@@ -334,9 +368,9 @@ impl<'a> IntoBindParamInOut<'a> for &'a mut i32 {
     }
 }
 
-impl<'a> IntoBindParamOut<'a> for &'a mut Option<i32> {
+impl<'conn, 'param> IntoBindParamOut<'conn, 'param> for &'param mut Option<i32> {
     #[inline]
-    fn into_bind_param_out(self) -> BindParam<'a> {
+    fn into_bind_param_out(self) -> BindParam<'conn, 'param> {
         BindParam {
             value: Value::Output(Output::I32Nullable(self, 0)),
             indicator: 0,
@@ -344,9 +378,9 @@ impl<'a> IntoBindParamOut<'a> for &'a mut Option<i32> {
     }
 }
 
-impl<'a> IntoBindParamInOut<'a> for &'a mut Option<i32> {
+impl<'conn, 'param> IntoBindParamInOut<'conn, 'param> for &'param mut Option<i32> {
     #[inline]
-    fn into_bind_param_in_out(self) -> BindParam<'a> {
+    fn into_bind_param_in_out(self) -> BindParam<'conn, 'param> {
         let (indicator, native) = self
             .as_ref()
             .map_or((NULL_DATA, 0), |value| (indicator(size_of::<i32>()), *value));
@@ -357,9 +391,9 @@ impl<'a> IntoBindParamInOut<'a> for &'a mut Option<i32> {
     }
 }
 
-impl<'a> IntoBindParamOut<'a> for &'a mut i64 {
+impl<'conn, 'param> IntoBindParamOut<'conn, 'param> for &'param mut i64 {
     #[inline]
-    fn into_bind_param_out(self) -> BindParam<'a> {
+    fn into_bind_param_out(self) -> BindParam<'conn, 'param> {
         BindParam {
             value: Value::Output(Output::I64(self)),
             indicator: 0,
@@ -367,9 +401,9 @@ impl<'a> IntoBindParamOut<'a> for &'a mut i64 {
     }
 }
 
-impl<'a> IntoBindParamInOut<'a> for &'a mut i64 {
+impl<'conn, 'param> IntoBindParamInOut<'conn, 'param> for &'param mut i64 {
     #[inline]
-    fn into_bind_param_in_out(self) -> BindParam<'a> {
+    fn into_bind_param_in_out(self) -> BindParam<'conn, 'param> {
         BindParam {
             value: Value::InOut(Output::I64(self)),
             indicator: indicator(size_of::<i64>()),
@@ -377,9 +411,9 @@ impl<'a> IntoBindParamInOut<'a> for &'a mut i64 {
     }
 }
 
-impl<'a> IntoBindParamOut<'a> for &'a mut Option<i64> {
+impl<'conn, 'param> IntoBindParamOut<'conn, 'param> for &'param mut Option<i64> {
     #[inline]
-    fn into_bind_param_out(self) -> BindParam<'a> {
+    fn into_bind_param_out(self) -> BindParam<'conn, 'param> {
         BindParam {
             value: Value::Output(Output::I64Nullable(self, 0)),
             indicator: 0,
@@ -387,9 +421,9 @@ impl<'a> IntoBindParamOut<'a> for &'a mut Option<i64> {
     }
 }
 
-impl<'a> IntoBindParamInOut<'a> for &'a mut Option<i64> {
+impl<'conn, 'param> IntoBindParamInOut<'conn, 'param> for &'param mut Option<i64> {
     #[inline]
-    fn into_bind_param_in_out(self) -> BindParam<'a> {
+    fn into_bind_param_in_out(self) -> BindParam<'conn, 'param> {
         let (indicator, native) = self
             .as_ref()
             .map_or((NULL_DATA, 0), |value| (indicator(size_of::<i64>()), *value));
@@ -400,9 +434,9 @@ impl<'a> IntoBindParamInOut<'a> for &'a mut Option<i64> {
     }
 }
 
-impl<'a> IntoBindParamOut<'a> for &'a mut f32 {
+impl<'conn, 'param> IntoBindParamOut<'conn, 'param> for &'param mut f32 {
     #[inline]
-    fn into_bind_param_out(self) -> BindParam<'a> {
+    fn into_bind_param_out(self) -> BindParam<'conn, 'param> {
         BindParam {
             value: Value::Output(Output::F32(self)),
             indicator: 0,
@@ -410,9 +444,9 @@ impl<'a> IntoBindParamOut<'a> for &'a mut f32 {
     }
 }
 
-impl<'a> IntoBindParamInOut<'a> for &'a mut f32 {
+impl<'conn, 'param> IntoBindParamInOut<'conn, 'param> for &'param mut f32 {
     #[inline]
-    fn into_bind_param_in_out(self) -> BindParam<'a> {
+    fn into_bind_param_in_out(self) -> BindParam<'conn, 'param> {
         BindParam {
             value: Value::InOut(Output::F32(self)),
             indicator: indicator(size_of::<f32>()),
@@ -420,9 +454,9 @@ impl<'a> IntoBindParamInOut<'a> for &'a mut f32 {
     }
 }
 
-impl<'a> IntoBindParamOut<'a> for &'a mut Option<f32> {
+impl<'conn, 'param> IntoBindParamOut<'conn, 'param> for &'param mut Option<f32> {
     #[inline]
-    fn into_bind_param_out(self) -> BindParam<'a> {
+    fn into_bind_param_out(self) -> BindParam<'conn, 'param> {
         BindParam {
             value: Value::Output(Output::F32Nullable(self, 0.0)),
             indicator: 0,
@@ -430,9 +464,9 @@ impl<'a> IntoBindParamOut<'a> for &'a mut Option<f32> {
     }
 }
 
-impl<'a> IntoBindParamInOut<'a> for &'a mut Option<f32> {
+impl<'conn, 'param> IntoBindParamInOut<'conn, 'param> for &'param mut Option<f32> {
     #[inline]
-    fn into_bind_param_in_out(self) -> BindParam<'a> {
+    fn into_bind_param_in_out(self) -> BindParam<'conn, 'param> {
         let (indicator, native) = self
             .as_ref()
             .map_or((NULL_DATA, 0.0), |value| (indicator(size_of::<f32>()), *value));
@@ -443,9 +477,9 @@ impl<'a> IntoBindParamInOut<'a> for &'a mut Option<f32> {
     }
 }
 
-impl<'a> IntoBindParamOut<'a> for &'a mut f64 {
+impl<'conn, 'param> IntoBindParamOut<'conn, 'param> for &'param mut f64 {
     #[inline]
-    fn into_bind_param_out(self) -> BindParam<'a> {
+    fn into_bind_param_out(self) -> BindParam<'conn, 'param> {
         BindParam {
             value: Value::Output(Output::F64(self)),
             indicator: 0,
@@ -453,9 +487,9 @@ impl<'a> IntoBindParamOut<'a> for &'a mut f64 {
     }
 }
 
-impl<'a> IntoBindParamInOut<'a> for &'a mut f64 {
+impl<'conn, 'param> IntoBindParamInOut<'conn, 'param> for &'param mut f64 {
     #[inline]
-    fn into_bind_param_in_out(self) -> BindParam<'a> {
+    fn into_bind_param_in_out(self) -> BindParam<'conn, 'param> {
         BindParam {
             value: Value::InOut(Output::F64(self)),
             indicator: indicator(size_of::<f64>()),
@@ -463,9 +497,9 @@ impl<'a> IntoBindParamInOut<'a> for &'a mut f64 {
     }
 }
 
-impl<'a> IntoBindParamOut<'a> for &'a mut Option<f64> {
+impl<'conn, 'param> IntoBindParamOut<'conn, 'param> for &'param mut Option<f64> {
     #[inline]
-    fn into_bind_param_out(self) -> BindParam<'a> {
+    fn into_bind_param_out(self) -> BindParam<'conn, 'param> {
         BindParam {
             value: Value::Output(Output::F64Nullable(self, 0.0)),
             indicator: 0,
@@ -473,9 +507,9 @@ impl<'a> IntoBindParamOut<'a> for &'a mut Option<f64> {
     }
 }
 
-impl<'a> IntoBindParamInOut<'a> for &'a mut Option<f64> {
+impl<'conn, 'param> IntoBindParamInOut<'conn, 'param> for &'param mut Option<f64> {
     #[inline]
-    fn into_bind_param_in_out(self) -> BindParam<'a> {
+    fn into_bind_param_in_out(self) -> BindParam<'conn, 'param> {
         let (indicator, native) = self
             .as_ref()
             .map_or((NULL_DATA, 0.0), |value| (indicator(size_of::<f64>()), *value));
@@ -486,9 +520,9 @@ impl<'a> IntoBindParamInOut<'a> for &'a mut Option<f64> {
     }
 }
 
-impl<'a> IntoBindParamOut<'a> for &'a mut Date {
+impl<'conn, 'param> IntoBindParamOut<'conn, 'param> for &'param mut Date {
     #[inline]
-    fn into_bind_param_out(self) -> BindParam<'a> {
+    fn into_bind_param_out(self) -> BindParam<'conn, 'param> {
         BindParam {
             value: Value::Output(Output::Date(self)),
             indicator: 0,
@@ -496,9 +530,9 @@ impl<'a> IntoBindParamOut<'a> for &'a mut Date {
     }
 }
 
-impl<'a> IntoBindParamInOut<'a> for &'a mut Date {
+impl<'conn, 'param> IntoBindParamInOut<'conn, 'param> for &'param mut Date {
     #[inline]
-    fn into_bind_param_in_out(self) -> BindParam<'a> {
+    fn into_bind_param_in_out(self) -> BindParam<'conn, 'param> {
         BindParam {
             value: Value::InOut(Output::Date(self)),
             indicator: indicator(size_of::<Date>()),
@@ -506,9 +540,9 @@ impl<'a> IntoBindParamInOut<'a> for &'a mut Date {
     }
 }
 
-impl<'a> IntoBindParamOut<'a> for &'a mut Option<Date> {
+impl<'conn, 'param> IntoBindParamOut<'conn, 'param> for &'param mut Option<Date> {
     #[inline]
-    fn into_bind_param_out(self) -> BindParam<'a> {
+    fn into_bind_param_out(self) -> BindParam<'conn, 'param> {
         BindParam {
             value: Value::Output(Output::DateNullable(self, Date::MIN)),
             indicator: 0,
@@ -516,9 +550,9 @@ impl<'a> IntoBindParamOut<'a> for &'a mut Option<Date> {
     }
 }
 
-impl<'a> IntoBindParamInOut<'a> for &'a mut Option<Date> {
+impl<'conn, 'param> IntoBindParamInOut<'conn, 'param> for &'param mut Option<Date> {
     #[inline]
-    fn into_bind_param_in_out(self) -> BindParam<'a> {
+    fn into_bind_param_in_out(self) -> BindParam<'conn, 'param> {
         let (indicator, native) = self
             .as_ref()
             .map_or((NULL_DATA, Date::MIN), |value| (indicator(size_of::<Date>()), *value));
@@ -529,9 +563,9 @@ impl<'a> IntoBindParamInOut<'a> for &'a mut Option<Date> {
     }
 }
 
-impl<'a> IntoBindParamOut<'a> for &'a mut Time {
+impl<'conn, 'param> IntoBindParamOut<'conn, 'param> for &'param mut Time {
     #[inline]
-    fn into_bind_param_out(self) -> BindParam<'a> {
+    fn into_bind_param_out(self) -> BindParam<'conn, 'param> {
         BindParam {
             value: Value::Output(Output::Time(self)),
             indicator: 0,
@@ -539,9 +573,9 @@ impl<'a> IntoBindParamOut<'a> for &'a mut Time {
     }
 }
 
-impl<'a> IntoBindParamInOut<'a> for &'a mut Time {
+impl<'conn, 'param> IntoBindParamInOut<'conn, 'param> for &'param mut Time {
     #[inline]
-    fn into_bind_param_in_out(self) -> BindParam<'a> {
+    fn into_bind_param_in_out(self) -> BindParam<'conn, 'param> {
         BindParam {
             value: Value::InOut(Output::Time(self)),
             indicator: indicator(size_of::<Time>()),
@@ -549,9 +583,9 @@ impl<'a> IntoBindParamInOut<'a> for &'a mut Time {
     }
 }
 
-impl<'a> IntoBindParamOut<'a> for &'a mut Option<Time> {
+impl<'conn, 'param> IntoBindParamOut<'conn, 'param> for &'param mut Option<Time> {
     #[inline]
-    fn into_bind_param_out(self) -> BindParam<'a> {
+    fn into_bind_param_out(self) -> BindParam<'conn, 'param> {
         BindParam {
             value: Value::Output(Output::TimeNullable(self, Time::ZERO)),
             indicator: 0,
@@ -559,9 +593,9 @@ impl<'a> IntoBindParamOut<'a> for &'a mut Option<Time> {
     }
 }
 
-impl<'a> IntoBindParamInOut<'a> for &'a mut Option<Time> {
+impl<'conn, 'param> IntoBindParamInOut<'conn, 'param> for &'param mut Option<Time> {
     #[inline]
-    fn into_bind_param_in_out(self) -> BindParam<'a> {
+    fn into_bind_param_in_out(self) -> BindParam<'conn, 'param> {
         let (indicator, native) = self
             .as_ref()
             .map_or((NULL_DATA, Time::ZERO), |value| (indicator(size_of::<Time>()), *value));
@@ -572,9 +606,9 @@ impl<'a> IntoBindParamInOut<'a> for &'a mut Option<Time> {
     }
 }
 
-impl<'a> IntoBindParamOut<'a> for &'a mut IntervalYM {
+impl<'conn, 'param> IntoBindParamOut<'conn, 'param> for &'param mut IntervalYM {
     #[inline]
-    fn into_bind_param_out(self) -> BindParam<'a> {
+    fn into_bind_param_out(self) -> BindParam<'conn, 'param> {
         BindParam {
             value: Value::Output(Output::IntervalYM(self)),
             indicator: 0,
@@ -582,9 +616,9 @@ impl<'a> IntoBindParamOut<'a> for &'a mut IntervalYM {
     }
 }
 
-impl<'a> IntoBindParamInOut<'a> for &'a mut IntervalYM {
+impl<'conn, 'param> IntoBindParamInOut<'conn, 'param> for &'param mut IntervalYM {
     #[inline]
-    fn into_bind_param_in_out(self) -> BindParam<'a> {
+    fn into_bind_param_in_out(self) -> BindParam<'conn, 'param> {
         BindParam {
             value: Value::InOut(Output::IntervalYM(self)),
             indicator: indicator(size_of::<IntervalYM>()),
@@ -592,9 +626,9 @@ impl<'a> IntoBindParamInOut<'a> for &'a mut IntervalYM {
     }
 }
 
-impl<'a> IntoBindParamOut<'a> for &'a mut Option<IntervalYM> {
+impl<'conn, 'param> IntoBindParamOut<'conn, 'param> for &'param mut Option<IntervalYM> {
     #[inline]
-    fn into_bind_param_out(self) -> BindParam<'a> {
+    fn into_bind_param_out(self) -> BindParam<'conn, 'param> {
         BindParam {
             value: Value::Output(Output::IntervalYMNullable(self, IntervalYM::ZERO)),
             indicator: 0,
@@ -602,9 +636,9 @@ impl<'a> IntoBindParamOut<'a> for &'a mut Option<IntervalYM> {
     }
 }
 
-impl<'a> IntoBindParamInOut<'a> for &'a mut Option<IntervalYM> {
+impl<'conn, 'param> IntoBindParamInOut<'conn, 'param> for &'param mut Option<IntervalYM> {
     #[inline]
-    fn into_bind_param_in_out(self) -> BindParam<'a> {
+    fn into_bind_param_in_out(self) -> BindParam<'conn, 'param> {
         let (indicator, native) = self.as_ref().map_or((NULL_DATA, IntervalYM::ZERO), |value| {
             (indicator(size_of::<IntervalYM>()), *value)
         });
@@ -615,9 +649,9 @@ impl<'a> IntoBindParamInOut<'a> for &'a mut Option<IntervalYM> {
     }
 }
 
-impl<'a> IntoBindParamOut<'a> for &'a mut IntervalDS {
+impl<'conn, 'param> IntoBindParamOut<'conn, 'param> for &'param mut IntervalDS {
     #[inline]
-    fn into_bind_param_out(self) -> BindParam<'a> {
+    fn into_bind_param_out(self) -> BindParam<'conn, 'param> {
         BindParam {
             value: Value::Output(Output::IntervalDS(self)),
             indicator: 0,
@@ -625,9 +659,9 @@ impl<'a> IntoBindParamOut<'a> for &'a mut IntervalDS {
     }
 }
 
-impl<'a> IntoBindParamInOut<'a> for &'a mut IntervalDS {
+impl<'conn, 'param> IntoBindParamInOut<'conn, 'param> for &'param mut IntervalDS {
     #[inline]
-    fn into_bind_param_in_out(self) -> BindParam<'a> {
+    fn into_bind_param_in_out(self) -> BindParam<'conn, 'param> {
         BindParam {
             value: Value::InOut(Output::IntervalDS(self)),
             indicator: indicator(size_of::<IntervalDS>()),
@@ -635,9 +669,9 @@ impl<'a> IntoBindParamInOut<'a> for &'a mut IntervalDS {
     }
 }
 
-impl<'a> IntoBindParamOut<'a> for &'a mut Option<IntervalDS> {
+impl<'conn, 'param> IntoBindParamOut<'conn, 'param> for &'param mut Option<IntervalDS> {
     #[inline]
-    fn into_bind_param_out(self) -> BindParam<'a> {
+    fn into_bind_param_out(self) -> BindParam<'conn, 'param> {
         BindParam {
             value: Value::Output(Output::IntervalDSNullable(self, IntervalDS::ZERO)),
             indicator: 0,
@@ -645,9 +679,9 @@ impl<'a> IntoBindParamOut<'a> for &'a mut Option<IntervalDS> {
     }
 }
 
-impl<'a> IntoBindParamInOut<'a> for &'a mut Option<IntervalDS> {
+impl<'conn, 'param> IntoBindParamInOut<'conn, 'param> for &'param mut Option<IntervalDS> {
     #[inline]
-    fn into_bind_param_in_out(self) -> BindParam<'a> {
+    fn into_bind_param_in_out(self) -> BindParam<'conn, 'param> {
         let (indicator, native) = self.as_ref().map_or((NULL_DATA, IntervalDS::ZERO), |value| {
             (indicator(size_of::<IntervalDS>()), *value)
         });
@@ -658,9 +692,9 @@ impl<'a> IntoBindParamInOut<'a> for &'a mut Option<IntervalDS> {
     }
 }
 
-impl<'a> IntoBindParamOut<'a> for &'a mut Number {
+impl<'conn, 'param> IntoBindParamOut<'conn, 'param> for &'param mut Number {
     #[inline]
-    fn into_bind_param_out(self) -> BindParam<'a> {
+    fn into_bind_param_out(self) -> BindParam<'conn, 'param> {
         BindParam {
             value: Value::Output(Output::Number(self, YacNumber::ZERO)),
             indicator: 0,
@@ -668,9 +702,9 @@ impl<'a> IntoBindParamOut<'a> for &'a mut Number {
     }
 }
 
-impl<'a> IntoBindParamInOut<'a> for &'a mut Number {
+impl<'conn, 'param> IntoBindParamInOut<'conn, 'param> for &'param mut Number {
     #[inline]
-    fn into_bind_param_in_out(self) -> BindParam<'a> {
+    fn into_bind_param_in_out(self) -> BindParam<'conn, 'param> {
         let native = YacNumber::from_number(*self);
         BindParam {
             value: Value::InOut(Output::Number(self, native)),
@@ -679,9 +713,9 @@ impl<'a> IntoBindParamInOut<'a> for &'a mut Number {
     }
 }
 
-impl<'a> IntoBindParamOut<'a> for &'a mut Option<Number> {
+impl<'conn, 'param> IntoBindParamOut<'conn, 'param> for &'param mut Option<Number> {
     #[inline]
-    fn into_bind_param_out(self) -> BindParam<'a> {
+    fn into_bind_param_out(self) -> BindParam<'conn, 'param> {
         BindParam {
             value: Value::Output(Output::NumberNullable(self, YacNumber::ZERO)),
             indicator: 0,
@@ -689,9 +723,9 @@ impl<'a> IntoBindParamOut<'a> for &'a mut Option<Number> {
     }
 }
 
-impl<'a> IntoBindParamInOut<'a> for &'a mut Option<Number> {
+impl<'conn, 'param> IntoBindParamInOut<'conn, 'param> for &'param mut Option<Number> {
     #[inline]
-    fn into_bind_param_in_out(self) -> BindParam<'a> {
+    fn into_bind_param_in_out(self) -> BindParam<'conn, 'param> {
         let (indicator, native) = self.as_ref().map_or((NULL_DATA, YacNumber::ZERO), |value| {
             (indicator(size_of::<YacNumber>()), YacNumber::from_number(*value))
         });
@@ -702,9 +736,9 @@ impl<'a> IntoBindParamInOut<'a> for &'a mut Option<Number> {
     }
 }
 
-impl<'a> IntoBindParamOut<'a> for &'a mut Timestamp {
+impl<'conn, 'param> IntoBindParamOut<'conn, 'param> for &'param mut Timestamp {
     #[inline]
-    fn into_bind_param_out(self) -> BindParam<'a> {
+    fn into_bind_param_out(self) -> BindParam<'conn, 'param> {
         BindParam {
             value: Value::Output(Output::Timestamp(self, YacTimestamp::with_timestamp(Timestamp::MIN))),
             indicator: 0,
@@ -712,9 +746,9 @@ impl<'a> IntoBindParamOut<'a> for &'a mut Timestamp {
     }
 }
 
-impl<'a> IntoBindParamInOut<'a> for &'a mut Timestamp {
+impl<'conn, 'param> IntoBindParamInOut<'conn, 'param> for &'param mut Timestamp {
     #[inline]
-    fn into_bind_param_in_out(self) -> BindParam<'a> {
+    fn into_bind_param_in_out(self) -> BindParam<'conn, 'param> {
         let native = YacTimestamp::with_timestamp(*self);
         BindParam {
             value: Value::InOut(Output::Timestamp(self, native)),
@@ -723,9 +757,9 @@ impl<'a> IntoBindParamInOut<'a> for &'a mut Timestamp {
     }
 }
 
-impl<'a> IntoBindParamOut<'a> for &'a mut Option<Timestamp> {
+impl<'conn, 'param> IntoBindParamOut<'conn, 'param> for &'param mut Option<Timestamp> {
     #[inline]
-    fn into_bind_param_out(self) -> BindParam<'a> {
+    fn into_bind_param_out(self) -> BindParam<'conn, 'param> {
         BindParam {
             value: Value::Output(Output::TimestampNullable(
                 self,
@@ -736,9 +770,9 @@ impl<'a> IntoBindParamOut<'a> for &'a mut Option<Timestamp> {
     }
 }
 
-impl<'a> IntoBindParamInOut<'a> for &'a mut Option<Timestamp> {
+impl<'conn, 'param> IntoBindParamInOut<'conn, 'param> for &'param mut Option<Timestamp> {
     #[inline]
-    fn into_bind_param_in_out(self) -> BindParam<'a> {
+    fn into_bind_param_in_out(self) -> BindParam<'conn, 'param> {
         let (indicator, native) =
             self.as_ref()
                 .map_or((NULL_DATA, YacTimestamp::with_timestamp(Timestamp::MIN)), |value| {
@@ -754,9 +788,9 @@ impl<'a> IntoBindParamInOut<'a> for &'a mut Option<Timestamp> {
     }
 }
 
-impl<'a> IntoBindParamOut<'a> for &'a mut String {
+impl<'conn, 'param> IntoBindParamOut<'conn, 'param> for &'param mut String {
     #[inline]
-    fn into_bind_param_out(self) -> BindParam<'a> {
+    fn into_bind_param_out(self) -> BindParam<'conn, 'param> {
         BindParam {
             value: Value::Output(Output::Text(self)),
             indicator: 0,
@@ -764,9 +798,9 @@ impl<'a> IntoBindParamOut<'a> for &'a mut String {
     }
 }
 
-impl<'a> IntoBindParamInOut<'a> for &'a mut String {
+impl<'conn, 'param> IntoBindParamInOut<'conn, 'param> for &'param mut String {
     #[inline]
-    fn into_bind_param_in_out(self) -> BindParam<'a> {
+    fn into_bind_param_in_out(self) -> BindParam<'conn, 'param> {
         let indicator = indicator(self.len());
         BindParam {
             value: Value::InOut(Output::Text(self)),
@@ -775,9 +809,9 @@ impl<'a> IntoBindParamInOut<'a> for &'a mut String {
     }
 }
 
-impl<'a> IntoBindParamOut<'a> for (&'a mut Option<String>, usize) {
+impl<'conn, 'param> IntoBindParamOut<'conn, 'param> for (&'param mut Option<String>, usize) {
     #[inline]
-    fn into_bind_param_out(self) -> BindParam<'a> {
+    fn into_bind_param_out(self) -> BindParam<'conn, 'param> {
         BindParam {
             value: Value::Output(Output::TextNullable(self.0, None, self.1)),
             indicator: 0,
@@ -785,9 +819,9 @@ impl<'a> IntoBindParamOut<'a> for (&'a mut Option<String>, usize) {
     }
 }
 
-impl<'a> IntoBindParamInOut<'a> for (&'a mut Option<String>, usize) {
+impl<'conn, 'param> IntoBindParamInOut<'conn, 'param> for (&'param mut Option<String>, usize) {
     #[inline]
-    fn into_bind_param_in_out(self) -> BindParam<'a> {
+    fn into_bind_param_in_out(self) -> BindParam<'conn, 'param> {
         let indicator = self.0.as_ref().map_or(NULL_DATA, |value| indicator(value.len()));
         BindParam {
             value: Value::InOut(Output::TextNullable(self.0, None, self.1)),
@@ -796,9 +830,9 @@ impl<'a> IntoBindParamInOut<'a> for (&'a mut Option<String>, usize) {
     }
 }
 
-impl<'a> IntoBindParamOut<'a> for &'a mut Vec<u8> {
+impl<'conn, 'param> IntoBindParamOut<'conn, 'param> for &'param mut Vec<u8> {
     #[inline]
-    fn into_bind_param_out(self) -> BindParam<'a> {
+    fn into_bind_param_out(self) -> BindParam<'conn, 'param> {
         BindParam {
             value: Value::Output(Output::Binary(self)),
             indicator: 0,
@@ -806,9 +840,9 @@ impl<'a> IntoBindParamOut<'a> for &'a mut Vec<u8> {
     }
 }
 
-impl<'a> IntoBindParamInOut<'a> for &'a mut Vec<u8> {
+impl<'conn, 'param> IntoBindParamInOut<'conn, 'param> for &'param mut Vec<u8> {
     #[inline]
-    fn into_bind_param_in_out(self) -> BindParam<'a> {
+    fn into_bind_param_in_out(self) -> BindParam<'conn, 'param> {
         let indicator = indicator(self.len());
         BindParam {
             value: Value::InOut(Output::Binary(self)),
@@ -817,9 +851,9 @@ impl<'a> IntoBindParamInOut<'a> for &'a mut Vec<u8> {
     }
 }
 
-impl<'a> IntoBindParamOut<'a> for (&'a mut Option<Vec<u8>>, usize) {
+impl<'conn, 'param> IntoBindParamOut<'conn, 'param> for (&'param mut Option<Vec<u8>>, usize) {
     #[inline]
-    fn into_bind_param_out(self) -> BindParam<'a> {
+    fn into_bind_param_out(self) -> BindParam<'conn, 'param> {
         BindParam {
             value: Value::Output(Output::BinaryNullable(self.0, None, self.1)),
             indicator: 0,
@@ -827,13 +861,53 @@ impl<'a> IntoBindParamOut<'a> for (&'a mut Option<Vec<u8>>, usize) {
     }
 }
 
-impl<'a> IntoBindParamInOut<'a> for (&'a mut Option<Vec<u8>>, usize) {
+impl<'conn, 'param> IntoBindParamInOut<'conn, 'param> for (&'param mut Option<Vec<u8>>, usize) {
     #[inline]
-    fn into_bind_param_in_out(self) -> BindParam<'a> {
+    fn into_bind_param_in_out(self) -> BindParam<'conn, 'param> {
         let indicator = self.0.as_ref().map_or(NULL_DATA, |value| indicator(value.len()));
         BindParam {
             value: Value::InOut(Output::BinaryNullable(self.0, None, self.1)),
             indicator,
+        }
+    }
+}
+
+impl<'conn, 'param> IntoBindParamOut<'conn, 'param> for &'param mut Blob<'conn> {
+    #[inline]
+    fn into_bind_param_out(self) -> BindParam<'conn, 'param> {
+        BindParam {
+            value: Value::Output(Output::Blob(self)),
+            indicator: 0,
+        }
+    }
+}
+
+impl<'conn, 'param> IntoBindParamOut<'conn, 'param> for &'param mut Clob<'conn> {
+    #[inline]
+    fn into_bind_param_out(self) -> BindParam<'conn, 'param> {
+        BindParam {
+            value: Value::Output(Output::Clob(self)),
+            indicator: 0,
+        }
+    }
+}
+
+impl<'conn, 'param> IntoBindParamOut<'conn, 'param> for &'param mut Option<Blob<'conn>> {
+    #[inline]
+    fn into_bind_param_out(self) -> BindParam<'conn, 'param> {
+        BindParam {
+            value: Value::Output(Output::BlobNullable(self, None)),
+            indicator: 0,
+        }
+    }
+}
+
+impl<'conn, 'param> IntoBindParamOut<'conn, 'param> for &'param mut Option<Clob<'conn>> {
+    #[inline]
+    fn into_bind_param_out(self) -> BindParam<'conn, 'param> {
+        BindParam {
+            value: Value::Output(Output::ClobNullable(self, None)),
+            indicator: 0,
         }
     }
 }

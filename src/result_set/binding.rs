@@ -1,7 +1,9 @@
 //! Native storage bound to result columns.
 
+use std::cell::RefCell;
 use std::mem::MaybeUninit;
 
+use crate::lob::Lob;
 use crate::types::{Date, IntervalDS, IntervalYM, Time, YacNumber, YacTimestamp};
 
 /// Storage bound to a result column for one fetched row.
@@ -9,7 +11,7 @@ use crate::types::{Date, IntervalDS, IntervalYM, Time, YacNumber, YacTimestamp};
 /// Each variant owns storage with the Rust representation matching its database
 /// type. Text and binary values retain uninitialized storage because the client
 /// writes their variable-length contents during fetch.
-pub(super) enum ColumnBinding {
+pub(super) enum ColumnBinding<'conn> {
     Unsupported,
     Bool(u8),
     TinyInt(i8),
@@ -26,9 +28,10 @@ pub(super) enum ColumnBinding {
     IntervalDS(IntervalDS),
     Text(Vec<MaybeUninit<u8>>),
     Binary(Vec<MaybeUninit<u8>>),
+    Lob(RefCell<Lob<'conn>>),
 }
 
-impl ColumnBinding {
+impl ColumnBinding<'_> {
     #[inline]
     fn scalar_buffer<T>(value: &mut T) -> &mut [u8] {
         unsafe { std::slice::from_raw_parts_mut(std::ptr::from_mut(value).cast(), size_of_val(value)) }
@@ -154,5 +157,16 @@ impl ColumnBinding {
         };
         // The client treats this as output-only storage and initializes the prefix before it is read.
         unsafe { std::slice::from_raw_parts_mut(value.as_mut_ptr().cast(), value.len()) }
+    }
+
+    #[inline]
+    pub(super) fn lob_buffer(&mut self) -> &mut [u8] {
+        let Self::Lob(locator) = self else {
+            unreachable!("LOB binding accessor requires a LOB")
+        };
+        // This is a byte view of the `YacLobLocator *` variable held by the
+        // wrapper. `bind_column` passes the view's address as `YacLobLocator **`,
+        // as required by the C driver, rather than passing locator contents.
+        locator.get_mut().bind_output()
     }
 }

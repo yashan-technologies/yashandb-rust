@@ -74,10 +74,45 @@ impl Connection {
     }
 
     #[inline]
-    fn with_handle<T>(&self, operation: impl FnOnce(&ffi::YacLib, &mut ConnectionHandle) -> T) -> T {
+    fn with_connection_handle<T>(&self, operation: impl FnOnce(&ffi::YacLib, &mut ConnectionHandle) -> T) -> T {
         // SAFETY: Connection is !Sync, and each FFI call receives exclusive access
         // to the DBC handle only for the duration of this callback.
         unsafe { operation(self.lib, &mut *self.handle.get()) }
+    }
+
+    #[inline]
+    pub(crate) fn with_handle<T>(&self, operation: impl FnOnce(&ffi::YacLib, &mut ffi::DbcHandle) -> T) -> T {
+        self.with_connection_handle(|lib, handle| operation(lib, &mut handle.dbc))
+    }
+
+    /// Create an empty temporary binary LOB owned by this connection.
+    #[inline]
+    pub fn temporary_blob(&self) -> Result<crate::Blob<'_>, Error> {
+        crate::Blob::temporary(self)
+    }
+
+    /// Create an empty temporary character LOB owned by this connection.
+    #[inline]
+    pub fn temporary_clob(&self) -> Result<crate::Clob<'_>, Error> {
+        crate::Clob::temporary(self)
+    }
+
+    /// Allocate a BLOB locator for a non-nullable output parameter.
+    ///
+    /// This allocates only a client-side descriptor. It does not create a
+    /// temporary server LOB. Bind the returned locator with [`crate::output`].
+    #[inline]
+    pub fn output_blob(&self) -> Result<crate::Blob<'_>, Error> {
+        crate::Blob::output(self)
+    }
+
+    /// Allocate a CLOB locator for a non-nullable output parameter.
+    ///
+    /// This allocates only a client-side descriptor. It does not create a
+    /// temporary server LOB. Bind the returned locator with [`crate::output`].
+    #[inline]
+    pub fn output_clob(&self) -> Result<crate::Clob<'_>, Error> {
+        crate::Clob::output(self)
     }
 
     #[inline]
@@ -105,7 +140,7 @@ impl Connection {
     /// [`Self::rollback`] for pending work.
     #[inline]
     pub fn set_auto_commit(&mut self, enabled: bool) {
-        self.with_handle(|lib, handle| lib.set_conn_auto_commit(&mut handle.dbc, enabled));
+        self.with_handle(|lib, dbc| lib.set_conn_auto_commit(dbc, enabled));
     }
 
     /// Commit the current transaction without changing auto-commit mode.
@@ -114,7 +149,7 @@ impl Connection {
     /// Prefer [`Self::transaction`] when a scoped guard is appropriate.
     #[inline]
     pub fn commit(&self) -> Result<(), Error> {
-        self.with_handle(|lib, handle| lib.commit(&mut handle.dbc))
+        self.with_handle(|lib, dbc| lib.commit(dbc))
     }
 
     /// Roll back the current transaction without changing auto-commit mode.
@@ -123,7 +158,7 @@ impl Connection {
     /// Prefer [`Self::transaction`] when a scoped guard is appropriate.
     #[inline]
     pub fn rollback(&self) -> Result<(), Error> {
-        self.with_handle(|lib, handle| lib.rollback(&mut handle.dbc))
+        self.with_handle(|lib, dbc| lib.rollback(dbc))
     }
 
     /// Start a scoped guard for the current connection transaction.
@@ -171,7 +206,7 @@ impl Connection {
             TransactionIsolation::CurrentCommitted => ffi::YacTxnIsolation::CurrCommitted,
             TransactionIsolation::Serializable => ffi::YacTxnIsolation::Serializable,
         };
-        self.with_handle(|lib, handle| lib.set_conn_transaction_isolation(&mut handle.dbc, level))
+        self.with_handle(|lib, dbc| lib.set_conn_transaction_isolation(dbc, level))
     }
 
     /// Get whether heartbeat is enabled.
@@ -190,7 +225,7 @@ impl Connection {
 
     #[inline]
     pub(crate) fn alloc_stmt(&self) -> Result<ffi::StmtHandle, Error> {
-        self.with_handle(|lib, handle| lib.alloc_stmt(&mut handle.dbc))
+        self.with_handle(|lib, dbc| lib.alloc_stmt(dbc))
     }
 
     #[inline]
@@ -237,7 +272,14 @@ impl Connection {
     /// Parameters are supplied as an array, slice, or `Vec` of [`BindParam`]
     /// values.
     #[inline]
-    pub fn execute_with<'a>(&self, sql: &str, params: impl AsMut<[BindParam<'a>]>) -> Result<ExecResult, Error> {
+    pub fn execute_with<'conn, 'param>(
+        &'conn self,
+        sql: &str,
+        params: impl AsMut<[BindParam<'conn, 'param>]>,
+    ) -> Result<ExecResult, Error>
+    where
+        'conn: 'param,
+    {
         self.prepare(sql)?.execute(params)
     }
 
@@ -246,11 +288,14 @@ impl Connection {
     /// Parameters are supplied as an array, slice, or `Vec` of [`BindParam`]
     /// values.
     #[inline]
-    pub fn query_with<'param>(
-        &self,
+    pub fn query_with<'conn, 'param>(
+        &'conn self,
         sql: &str,
-        params: impl AsMut<[BindParam<'param>]>,
-    ) -> Result<ResultSet<'_, '_>, Error> {
+        params: impl AsMut<[BindParam<'conn, 'param>]>,
+    ) -> Result<ResultSet<'conn, 'conn>, Error>
+    where
+        'conn: 'param,
+    {
         let mut params = params;
         self.prepare(sql)?.query_owned(params.as_mut())
     }
@@ -260,11 +305,14 @@ impl Connection {
     /// Names are passed without a SQL placeholder prefix: use `value` for
     /// `:value` in SQL. Parameters are supplied as an array, slice, or `Vec`.
     #[inline]
-    pub fn execute_named_with<'name, 'param>(
-        &self,
+    pub fn execute_named_with<'conn, 'name, 'param>(
+        &'conn self,
         sql: &str,
-        params: impl AsMut<[NamedBindParam<'name, 'param>]>,
-    ) -> Result<ExecResult, Error> {
+        params: impl AsMut<[NamedBindParam<'conn, 'name, 'param>]>,
+    ) -> Result<ExecResult, Error>
+    where
+        'conn: 'param,
+    {
         self.prepare(sql)?.execute_named(params)
     }
 
@@ -273,11 +321,14 @@ impl Connection {
     /// Names are passed without a SQL placeholder prefix: use `value` for
     /// `:value` in SQL. Parameters are supplied as an array, slice, or `Vec`.
     #[inline]
-    pub fn query_named_with<'name, 'param>(
-        &self,
+    pub fn query_named_with<'conn, 'name, 'param>(
+        &'conn self,
         sql: &str,
-        params: impl AsMut<[NamedBindParam<'name, 'param>]>,
-    ) -> Result<ResultSet<'_, '_>, Error> {
+        params: impl AsMut<[NamedBindParam<'conn, 'name, 'param>]>,
+    ) -> Result<ResultSet<'conn, 'conn>, Error>
+    where
+        'conn: 'param,
+    {
         let mut params = params;
         self.prepare(sql)?.query_named_owned(params.as_mut())
     }
@@ -295,7 +346,7 @@ impl Connection {
     pub fn query_one_map<T>(
         &self,
         sql: &str,
-        map: impl FnOnce(&crate::result_set::Row<'_>) -> Result<T, Error>,
+        map: impl FnOnce(&crate::result_set::Row<'_, '_>) -> Result<T, Error>,
     ) -> Result<T, Error> {
         let mut rows = self.query(sql)?;
         let operation = (|| {
@@ -322,7 +373,7 @@ impl Connection {
     pub fn query_opt_map<T>(
         &self,
         sql: &str,
-        map: impl FnOnce(&crate::result_set::Row<'_>) -> Result<T, Error>,
+        map: impl FnOnce(&crate::result_set::Row<'_, '_>) -> Result<T, Error>,
     ) -> Result<Option<T>, Error> {
         let mut rows = self.query(sql)?;
         let operation = (|| {
@@ -570,7 +621,7 @@ unsafe impl Send for Connection {}
 impl Drop for Connection {
     #[inline]
     fn drop(&mut self) {
-        self.with_handle(|lib, handle| {
+        self.with_connection_handle(|lib, handle| {
             lib.disconnect(&mut handle.dbc);
             lib.free_dbc(&mut handle.dbc);
             lib.free_env(&mut handle.env);

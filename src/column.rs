@@ -44,6 +44,12 @@ pub enum DataType {
     NVarChar,
     /// Binary data.
     Binary,
+    /// Binary large object.
+    Blob,
+    /// Character large object.
+    Clob,
+    /// National character large object.
+    Nclob,
     /// A database type not recognized by this driver, retained as metadata only.
     Other(u8),
 }
@@ -120,6 +126,12 @@ pub enum DataTypeInfo {
         /// Maximum byte length.
         size: u32,
     },
+    /// Binary large object.
+    Blob,
+    /// Character large object.
+    Clob,
+    /// National character large object.
+    Nclob,
     /// A database type not recognized by this driver, retained as metadata only.
     Other(u8),
 }
@@ -149,6 +161,9 @@ impl DataTypeInfo {
             Self::VarChar { .. } => DataType::VarChar,
             Self::NVarChar { .. } => DataType::NVarChar,
             Self::Binary { .. } => DataType::Binary,
+            Self::Blob => DataType::Blob,
+            Self::Clob => DataType::Clob,
+            Self::Nclob => DataType::Nclob,
             Self::Other(value) => DataType::Other(*value),
         }
     }

@@ -1,37 +1,61 @@
 //! Conversion of fetched column values into Rust values.
 
 use super::*;
+use crate::lob::{Blob, Clob};
 
-pub trait FromColumn<'row>: Sized {
-    fn from_column(column: &Column<'row>) -> Result<Self, Error>;
+pub trait FromColumn<'conn, 'row>: Sized {
+    fn from_column(column: &Column<'conn, 'row>) -> Result<Self, Error>;
 }
 
 macro_rules! impl_from_column {
     ($t:ty, $name:literal, $kind:pat, $read:ident) => {
-        impl<'row> FromColumn<'row> for $t {
+        impl<'conn, 'row> FromColumn<'conn, 'row> for $t {
             #[inline]
-            fn from_column(c: &Column<'row>) -> Result<Self, Error> {
+            fn from_column(c: &Column<'conn, 'row>) -> Result<Self, Error> {
                 c.read($name, |actual| matches!(actual, $kind), |buffer| buffer.$read())
             }
         }
-        impl<'row> FromColumn<'row> for Option<$t> {
+        impl<'conn, 'row> FromColumn<'conn, 'row> for Option<$t> {
             #[inline]
-            fn from_column(c: &Column<'row>) -> Result<Self, Error> {
+            fn from_column(c: &Column<'conn, 'row>) -> Result<Self, Error> {
                 c.read_optional($name, |actual| matches!(actual, $kind), |buffer| buffer.$read())
             }
         }
     };
     (borrow $t:ty, $name:literal, $kind:pat, $read:ident) => {
-        impl<'row> FromColumn<'row> for &'row $t {
+        impl<'conn, 'row> FromColumn<'conn, 'row> for &'row $t {
             #[inline]
-            fn from_column(c: &Column<'row>) -> Result<Self, Error> {
+            fn from_column(c: &Column<'conn, 'row>) -> Result<Self, Error> {
                 c.read($name, |actual| matches!(actual, $kind), |buffer| buffer.$read())
             }
         }
-        impl<'row> FromColumn<'row> for Option<&'row $t> {
+        impl<'conn, 'row> FromColumn<'conn, 'row> for Option<&'row $t> {
             #[inline]
-            fn from_column(c: &Column<'row>) -> Result<Self, Error> {
+            fn from_column(c: &Column<'conn, 'row>) -> Result<Self, Error> {
                 c.read_optional($name, |actual| matches!(actual, $kind), |buffer| buffer.$read())
+            }
+        }
+    };
+    (fallible $t:ty, $name:literal, $kind:pat, $read:ident) => {
+        impl<'conn, 'row> FromColumn<'conn, 'row> for $t {
+            #[inline]
+            fn from_column(c: &Column<'conn, 'row>) -> Result<Self, Error> {
+                c.read(
+                    $name,
+                    |actual| matches!(actual, $kind),
+                    |buffer| buffer.$read(c.index, c.pending_rebinds),
+                )?
+            }
+        }
+        impl<'conn, 'row> FromColumn<'conn, 'row> for Option<$t> {
+            #[inline]
+            fn from_column(c: &Column<'conn, 'row>) -> Result<Self, Error> {
+                c.read_optional(
+                    $name,
+                    |actual| matches!(actual, $kind),
+                    |buffer| buffer.$read(c.index, c.pending_rebinds),
+                )?
+                .transpose()
             }
         }
     };
@@ -73,3 +97,28 @@ impl_from_column!(
 );
 impl_from_column!(borrow[u8], "&[u8]", DataTypeInfo::Binary { .. }, as_binary);
 impl_from_column!(Vec<u8>, "Vec<u8>", DataTypeInfo::Binary { .. }, as_vec);
+
+impl_from_column!(fallible Blob<'conn>, "Blob", DataTypeInfo::Blob, as_blob);
+
+impl<'conn, 'row> FromColumn<'conn, 'row> for Clob<'conn> {
+    #[inline]
+    fn from_column(c: &Column<'conn, 'row>) -> Result<Self, Error> {
+        c.read(
+            "Clob",
+            |actual| matches!(actual, DataTypeInfo::Clob | DataTypeInfo::Nclob),
+            |buffer| buffer.as_clob(c.index, c.pending_rebinds, c.info.data_type_info),
+        )?
+    }
+}
+
+impl<'conn, 'row> FromColumn<'conn, 'row> for Option<Clob<'conn>> {
+    #[inline]
+    fn from_column(c: &Column<'conn, 'row>) -> Result<Self, Error> {
+        c.read_optional(
+            "Clob",
+            |actual| matches!(actual, DataTypeInfo::Clob | DataTypeInfo::Nclob),
+            |buffer| buffer.as_clob(c.index, c.pending_rebinds, c.info.data_type_info),
+        )?
+        .transpose()
+    }
+}

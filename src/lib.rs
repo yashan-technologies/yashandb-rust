@@ -169,15 +169,54 @@
 //! | `BIGINT` | `i64` / `Option<i64>` |
 //! | `FLOAT` | `f32` / `Option<f32>` |
 //! | `DOUBLE` | `f64` / `Option<f64>` |
-//! | `NUMBER` | [`Number`] / `Option<Number>` |
-//! | `DATE` | [`Date`] / `Option<Date>` |
-//! | `SHORTTIME` | [`Time`] / `Option<Time>` |
-//! | `TIMESTAMP` | [`Timestamp`] / `Option<Timestamp>` |
-//! | `INTERVAL YEAR TO MONTH` | [`IntervalYM`] / `Option<IntervalYM>` |
-//! | `INTERVAL DAY TO SECOND` | [`IntervalDS`] / `Option<IntervalDS>` |
+//! | `NUMBER` | [`Number`] / `Option<`[`Number`]`>` |
+//! | `DATE` | [`Date`] / `Option<`[`Date`]`>` |
+//! | `SHORTTIME` | [`Time`] / `Option<`[`Time`]`>` |
+//! | `TIMESTAMP` | [`Timestamp`] / `Option<`[`Timestamp`]`>` |
+//! | `INTERVAL YEAR TO MONTH` | [`IntervalYM`] / `Option<`[`IntervalYM`]`>` |
+//! | `INTERVAL DAY TO SECOND` | [`IntervalDS`] / `Option<`[`IntervalDS`]`>` |
 //! | `CHAR`, `NCHAR`, `VARCHAR`, `NVARCHAR` | `String`, `&str`, or their `Option<T>` forms |
 //! | `BINARY` | `Vec<u8>`, `&[u8]`, or their `Option<T>` forms |
+//! | `BLOB` | [`Blob`] / `Option<`[`Blob`]`>` |
+//! | `CLOB`, `NCLOB` | [`Clob`] / `Option<`[`Clob`]`>` |
 //!
+//! LOB query values are locators, not eagerly materialized contents. Extract a
+//! [`Blob`] or [`Clob`] with [`Row::get`], use its positioned I/O methods, and
+//! drop or [`Blob::finish`] / [`Clob::finish`] it before the owning connection
+//! is dropped. [`Blob`] offsets are one-based bytes; [`Clob`] offsets and lengths
+//! are one-based characters. [`Clob`] is the Rust representation for both CLOB
+//! and NCLOB columns. Reading a LOB into a `Vec<u8>` or `String` is explicit via
+//! [`Blob::read_to_end`] or [`Clob::read_to_string`]. Extracting a LOB transfers
+//! its locator from the row binding, so the same LOB column can be extracted
+//! only once for that row. Later fetches rebind transferred LOB columns, and
+//! transferred locators remain usable after [`ResultSet::finish`].
+//!
+//! Temporary LOBs are created with [`Connection::temporary_blob`] or
+//! [`Connection::temporary_clob`]. They are server-side temporary values and
+//! can be passed as input parameters with [`input`]. Pure OUT LOB parameters
+//! use `output(&mut Option<Blob>)` / `output(&mut Option<Clob>)`, or a locator
+//! allocated by [`Connection::output_blob`] / [`Connection::output_clob`] for
+//! non-nullable output. LOB `in_out` parameters are not supported; use [`input`]
+//! or [`output`] for LOB parameters.
+//!
+//! ```no_run
+//! # use yashandb::{Blob, Connection, Error, input};
+//! # fn example(conn: &mut Connection) -> Result<(), Error> {
+//! let mut blob = conn.temporary_blob()?;
+//! blob.append(b"payload")?;
+//! conn.execute_with("insert into files(data) values (?)", [input(&blob)])?;
+//! blob.finish()?;
+//!
+//! let mut result = conn.query("select data from files")?;
+//! let row = result.fetch()?.expect("one row");
+//! let mut fetched: Blob<'_> = row.get(0)?;
+//! let mut bytes = Vec::new();
+//! fetched.read_to_end(&mut bytes)?;
+//! drop(fetched);
+//! result.finish()?;
+//! # Ok(())
+//! # }
+//! ```
 //! For parameter binding, the direction is reversed: the Rust type determines
 //! the YashanDB/YACLI type:
 //!
@@ -190,17 +229,22 @@
 //! | `i64` / `Option<i64>` | `BIGINT` |
 //! | `f32` / `Option<f32>` | `FLOAT` |
 //! | `f64` / `Option<f64>` | `DOUBLE` |
-//! | [`Number`] / `Option<Number>` | `NUMBER` |
-//! | [`Date`] / `Option<Date>` | `DATE` |
-//! | [`Time`] / `Option<Time>` | `SHORTTIME` |
-//! | [`Timestamp`] / `Option<Timestamp>` | `TIMESTAMP` |
-//! | [`IntervalYM`] / `Option<IntervalYM>` | `INTERVAL YEAR TO MONTH` |
-//! | [`IntervalDS`] / `Option<IntervalDS>` | `INTERVAL DAY TO SECOND` |
+//! | [`Number`] / `Option<`[`Number`]`>` | `NUMBER` |
+//! | [`Date`] / `Option<`[`Date`]`>` | `DATE` |
+//! | [`Time`] / `Option<`[`Time`]`>` | `SHORTTIME` |
+//! | [`Timestamp`] / `Option<`[`Timestamp`]`>` | `TIMESTAMP` |
+//! | [`IntervalYM`] / `Option<`[`IntervalYM`]`>` | `INTERVAL YEAR TO MONTH` |
+//! | [`IntervalDS`] / `Option<`[`IntervalDS`]`>` | `INTERVAL DAY TO SECOND` |
 //! | `&str` / `String` and their `Option<T>` forms | `VARCHAR` |
 //! | `&[u8]` / `Vec<u8>` and their `Option<T>` forms | `BINARY` |
+//! | `&`[`Blob`] / `Option<&`[`Blob`]`>` | `BLOB` input |
+//! | `&`[`Clob`] / `Option<&`[`Clob`]`>` | `CLOB` input |
+//! | `&mut `[`Blob`] / `&mut Option<`[`Blob`]`>` | `BLOB` output |
+//! | `&mut `[`Clob`] / `&mut Option<`[`Clob`]`>` | `CLOB` output |
 //!
 //! The corresponding `Option<T>` input and output forms keep the same database
-//! type and add SQL `NULL` handling.
+//! type and add SQL `NULL` handling. LOB `in_out` parameters are not supported;
+//! use [`input`] or [`output`] for LOB parameters.
 //!
 //! ```no_run
 //! # use yashandb::{Connection, Error, in_out, named, output};
@@ -248,6 +292,7 @@ mod error;
 mod ffi;
 mod library;
 mod load;
+mod lob;
 mod param;
 mod result_set;
 mod stmt;
@@ -258,6 +303,7 @@ pub use column::{ColumnInfo, DataType, DataTypeInfo};
 pub use conn::{Connection, ConnectionBuilder, TransactionIsolation};
 pub use error::Error;
 pub use library::{load_library, load_library_with_path};
+pub use lob::{Blob, Clob};
 pub use param::{BindParam, NamedBindParam, in_out, input, named, output};
 pub use result_set::{ResultSet, Row};
 pub use stmt::{ExecResult, Statement};

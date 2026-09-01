@@ -4,11 +4,13 @@ mod binding;
 mod convert;
 mod index;
 
+use std::cell::RefCell;
 use std::mem::MaybeUninit;
 
 use crate::column::{ColumnInfo, DataTypeInfo};
 use crate::error::Error;
 use crate::ffi::{NULL_DATA, YacExtType};
+use crate::lob::{Blob, Clob, Lob};
 use crate::stmt::Statement;
 use crate::types::{Date, IntervalDS, IntervalYM, Number, Time, Timestamp, YacNumber, YacTimestamp};
 
@@ -24,7 +26,9 @@ use self::binding::ColumnBinding;
 pub struct ResultSet<'conn, 'stmt> {
     statement: StatementAccess<'conn, 'stmt>,
     schema: Vec<ColumnInfo>,
-    columns: Vec<ColumnBuffer>,
+    columns: Vec<ColumnBuffer<'conn>>,
+    has_rebindable_columns: bool,
+    pending_rebinds: RefCell<Vec<usize>>,
     eof: bool,
 }
 
@@ -36,6 +40,15 @@ enum StatementAccess<'conn, 'stmt> {
 
 impl<'conn, 'stmt> StatementAccess<'conn, 'stmt> {
     #[inline]
+    fn as_mut(&mut self) -> &mut Statement<'conn> {
+        match self {
+            Self::Owned(stmt) => stmt,
+            Self::Borrowed(stmt) => stmt,
+            Self::None => unreachable!("result set statement has already been taken"),
+        }
+    }
+
+    #[inline]
     fn take(&mut self) -> Self {
         std::mem::replace(self, Self::None)
     }
@@ -45,12 +58,14 @@ impl<'conn> ResultSet<'conn, 'conn> {
     #[inline]
     pub(crate) fn from_stmt(mut stmt: Statement<'conn>) -> Result<Self, Error> {
         let schema = stmt.schema()?;
-        let columns = bind_columns(&mut stmt, &schema)?;
+        let (columns, has_rebindable_columns) = bind_columns(&mut stmt, &schema)?;
 
         Ok(Self {
             statement: StatementAccess::Owned(stmt),
             schema,
             columns,
+            has_rebindable_columns,
+            pending_rebinds: RefCell::new(Vec::new()),
             eof: false,
         })
     }
@@ -69,8 +84,8 @@ where
                 return Err(error);
             }
         };
-        let columns = match bind_columns(stmt, &schema) {
-            Ok(columns) => columns,
+        let (columns, has_rebindable_columns) = match bind_columns(stmt, &schema) {
+            Ok(result) => result,
             Err(error) => {
                 let _ = stmt.finish_result();
                 return Err(error);
@@ -81,17 +96,15 @@ where
             statement: StatementAccess::Borrowed(stmt),
             schema,
             columns,
+            has_rebindable_columns,
+            pending_rebinds: RefCell::new(Vec::new()),
             eof: false,
         })
     }
 
     #[inline]
     fn statement(&mut self) -> &mut Statement<'conn> {
-        match &mut self.statement {
-            StatementAccess::Owned(stmt) => stmt,
-            StatementAccess::Borrowed(stmt) => stmt,
-            StatementAccess::None => unreachable!("result set statement has already been taken"),
-        }
+        self.statement.as_mut()
     }
 
     /// Metadata for all result columns.
@@ -107,9 +120,12 @@ where
     /// as long as the returned row is borrowed. Once end of result set is
     /// reached, subsequent calls return `Ok(None)` without calling the client.
     #[inline]
-    pub fn fetch(&mut self) -> Result<Option<Row<'_>>, Error> {
+    pub fn fetch(&mut self) -> Result<Option<Row<'conn, '_>>, Error> {
         if self.eof {
             return Ok(None);
+        }
+        if self.has_rebindable_columns && !self.pending_rebinds.borrow().is_empty() {
+            self.rebind_transferred_columns()?;
         }
         match self.statement().fetch()? {
             0 => {
@@ -119,11 +135,39 @@ where
             1 => Ok(Some(Row {
                 schema: &self.schema,
                 columns: &self.columns,
+                pending_rebinds: &self.pending_rebinds,
             })),
             rows => Err(Error::Internal(format!(
                 "client returned {rows} rows for rowset size 1"
             ))),
         }
+    }
+
+    fn rebind_transferred_columns(&mut self) -> Result<(), Error> {
+        let (statement, columns, pending_rebinds) = (&mut self.statement, &mut self.columns, &mut self.pending_rebinds);
+        let statement = statement.as_mut();
+        let pending_rebinds = pending_rebinds.get_mut();
+        let mut failure = None;
+        for (position, index) in pending_rebinds.iter().copied().enumerate() {
+            let info = self.schema[index].data_type_info;
+            match info {
+                DataTypeInfo::Blob | DataTypeInfo::Clob | DataTypeInfo::Nclob => {
+                    if let Err(error) = rebind_lob_column(statement, &mut columns[index], index, info) {
+                        failure = Some((position, error));
+                        break;
+                    }
+                }
+                _ => unreachable!("column type does not support rebinding"),
+            }
+        }
+        if let Some((position, error)) = failure {
+            // Remove completed entries in place and retain this and later
+            // entries for a retry without replacing the Vec.
+            pending_rebinds.drain(..position);
+            return Err(error);
+        }
+        pending_rebinds.clear();
+        Ok(())
     }
 
     /// Finish the result stream and propagate a cleanup error.
@@ -151,9 +195,13 @@ impl Drop for ResultSet<'_, '_> {
     }
 }
 
-fn bind_columns(stmt: &mut Statement<'_>, schema: &[ColumnInfo]) -> Result<Vec<ColumnBuffer>, Error> {
+fn bind_columns<'conn>(
+    stmt: &mut Statement<'conn>,
+    schema: &[ColumnInfo],
+) -> Result<(Vec<ColumnBuffer<'conn>>, bool), Error> {
     let (ratio, nratio) = stmt.charset_ratios()?;
     let mut columns = Vec::with_capacity(schema.len());
+    let mut has_rebindable_columns = false;
 
     for (index, info) in schema.iter().enumerate() {
         match info.data_type_info {
@@ -322,6 +370,22 @@ fn bind_columns(stmt: &mut Statement<'_>, schema: &[ColumnInfo]) -> Result<Vec<C
                     &mut column.indicator,
                 )?;
             }
+            DataTypeInfo::Blob | DataTypeInfo::Clob | DataTypeInfo::Nclob => {
+                has_rebindable_columns = true;
+                let locator = Lob::new(stmt.connection())?;
+                let column = push_column(&mut columns, ColumnBinding::Lob(RefCell::new(locator)));
+                stmt.bind_column(
+                    index as u16,
+                    if matches!(info.data_type_info, DataTypeInfo::Blob) {
+                        YacExtType::Blob
+                    } else {
+                        // Bind NCLOB as CLOB so YACLI converts UTF-16 to UTF-8.
+                        YacExtType::Clob
+                    },
+                    column.binding.lob_buffer(),
+                    &mut column.indicator,
+                )?;
+            }
             _ => columns.push(ColumnBuffer {
                 binding: ColumnBinding::Unsupported,
                 indicator: 0,
@@ -329,7 +393,31 @@ fn bind_columns(stmt: &mut Statement<'_>, schema: &[ColumnInfo]) -> Result<Vec<C
         }
     }
 
-    Ok(columns)
+    Ok((columns, has_rebindable_columns))
+}
+
+fn rebind_lob_column<'conn>(
+    statement: &mut Statement<'conn>,
+    column: &mut ColumnBuffer<'conn>,
+    index: usize,
+    info: DataTypeInfo,
+) -> Result<(), Error> {
+    debug_assert!(matches!(&column.binding, ColumnBinding::Lob(lob) if !lob.borrow().is_live()));
+    let locator = Lob::new(statement.connection())?;
+    column.binding = ColumnBinding::Lob(RefCell::new(locator));
+    column.indicator = 0;
+    let ext_type = if matches!(info, DataTypeInfo::Blob) {
+        YacExtType::Blob
+    } else {
+        // Keep the rebind external type consistent with the initial NCLOB bind.
+        YacExtType::Clob
+    };
+    statement.bind_column(
+        index as u16,
+        ext_type,
+        column.binding.lob_buffer(),
+        &mut column.indicator,
+    )
 }
 
 #[inline]
@@ -343,17 +431,20 @@ fn variable_buffer(size: usize) -> Vec<MaybeUninit<u8>> {
 }
 
 #[inline]
-fn push_column(columns: &mut Vec<ColumnBuffer>, binding: ColumnBinding) -> &mut ColumnBuffer {
+fn push_column<'conn, 'column>(
+    columns: &'column mut Vec<ColumnBuffer<'conn>>,
+    binding: ColumnBinding<'conn>,
+) -> &'column mut ColumnBuffer<'conn> {
     columns.push(ColumnBuffer { binding, indicator: 0 });
     columns.last_mut().expect("column was just pushed")
 }
 
-struct ColumnBuffer {
-    binding: ColumnBinding,
+struct ColumnBuffer<'conn> {
+    binding: ColumnBinding<'conn>,
     indicator: i32,
 }
 
-impl ColumnBuffer {
+impl<'conn> ColumnBuffer<'conn> {
     #[inline]
     fn as_bool(&self) -> bool {
         debug_assert_ne!(self.indicator, NULL_DATA, "cannot read a NULL column value");
@@ -456,6 +547,37 @@ impl ColumnBuffer {
     }
 
     #[inline]
+    fn as_blob(&self, index: usize, pending_rebinds: &RefCell<Vec<usize>>) -> Result<Blob<'conn>, Error> {
+        self.take_lob(index, pending_rebinds).map(Blob::from_lob)
+    }
+
+    #[inline]
+    fn as_clob(
+        &self,
+        index: usize,
+        pending_rebinds: &RefCell<Vec<usize>>,
+        data_type_info: DataTypeInfo,
+    ) -> Result<Clob<'conn>, Error> {
+        self.take_lob(index, pending_rebinds).map(|lob| {
+            let lob_type = match data_type_info {
+                DataTypeInfo::Nclob => crate::ffi::YacTempLobType::NClob,
+                _ => crate::ffi::YacTempLobType::Clob,
+            };
+            Clob::from_lob(lob, lob_type)
+        })
+    }
+
+    #[inline]
+    fn take_lob(&self, index: usize, pending_rebinds: &RefCell<Vec<usize>>) -> Result<Lob<'conn>, Error> {
+        let ColumnBinding::Lob(lob) = &self.binding else {
+            unreachable!("LOB column requires a LOB binding")
+        };
+        let lob = lob.borrow_mut().take().ok_or(Error::ColumnValueTransferred { index })?;
+        pending_rebinds.borrow_mut().push(index);
+        Ok(lob)
+    }
+
+    #[inline]
     fn variable_bytes<'a>(&self, buffer: &'a [MaybeUninit<u8>]) -> &'a [u8] {
         assert!(
             self.indicator >= 0,
@@ -516,13 +638,14 @@ impl ColumnBuffer {
     }
 }
 
-pub struct Column<'row> {
-    index: usize,
+pub struct Column<'conn: 'row, 'row> {
     info: &'row ColumnInfo,
-    buffer: &'row ColumnBuffer,
+    buffer: &'row ColumnBuffer<'conn>,
+    index: usize,
+    pending_rebinds: &'row RefCell<Vec<usize>>,
 }
 
-impl<'row> Column<'row> {
+impl<'conn: 'row, 'row> Column<'conn, 'row> {
     #[inline]
     fn is_null(&self) -> bool {
         self.buffer.indicator == NULL_DATA
@@ -533,7 +656,7 @@ impl<'row> Column<'row> {
         &self,
         expected: &'static str,
         matches_type: impl FnOnce(DataTypeInfo) -> bool,
-        read: impl FnOnce(&'row ColumnBuffer) -> T,
+        read: impl FnOnce(&'row ColumnBuffer<'conn>) -> T,
     ) -> Result<T, Error> {
         if self.is_null() {
             return Err(Error::NullValue { index: self.index });
@@ -547,7 +670,7 @@ impl<'row> Column<'row> {
         &self,
         expected: &'static str,
         matches_type: impl FnOnce(DataTypeInfo) -> bool,
-        read: impl FnOnce(&'row ColumnBuffer) -> T,
+        read: impl FnOnce(&'row ColumnBuffer<'conn>) -> T,
     ) -> Result<Option<T>, Error> {
         if self.is_null() {
             Ok(None)
@@ -560,7 +683,7 @@ impl<'row> Column<'row> {
         &self,
         expected: &'static str,
         matches_type: impl FnOnce(DataTypeInfo) -> bool,
-        read: impl FnOnce(&'row ColumnBuffer) -> T,
+        read: impl FnOnce(&'row ColumnBuffer<'conn>) -> T,
     ) -> Result<T, Error> {
         if !matches_type(self.info.data_type_info) {
             return Err(Error::ColumnTypeMismatch {
@@ -575,12 +698,13 @@ impl<'row> Column<'row> {
 }
 
 /// A borrowed view of the current result row.
-pub struct Row<'row> {
+pub struct Row<'conn: 'row, 'row> {
     schema: &'row [ColumnInfo],
-    columns: &'row [ColumnBuffer],
+    columns: &'row [ColumnBuffer<'conn>],
+    pending_rebinds: &'row RefCell<Vec<usize>>,
 }
 
-impl<'row> Row<'row> {
+impl<'conn: 'row, 'row> Row<'conn, 'row> {
     /// Metadata for all columns in this row.
     #[inline]
     pub fn columns(&self) -> &'row [ColumnInfo] {
@@ -620,6 +744,8 @@ impl<'row> Row<'row> {
     /// | `INTERVAL DAY TO SECOND` | [`IntervalDS`] |
     /// | `CHAR`, `VARCHAR`, `NCHAR`, `NVARCHAR` | `String` or `&str` |
     /// | `BINARY` | `Vec<u8>` or `&[u8]` |
+    /// | `BLOB` | [`crate::Blob`] |
+    /// | `CLOB`, `NCLOB` | [`crate::Clob`] |
     ///
     /// `TIMESTAMP WITH LOCAL TIME ZONE`, `TIMESTAMP WITH TIME ZONE`, and
     /// unrecognized SQL types are not supported and return
@@ -637,7 +763,8 @@ impl<'row> Row<'row> {
     /// through metadata but return [`Error::UnsupportedColumnType`] only when
     /// that column is read. The supported target types are exactly the table
     /// entries and their `Option` wrappers; custom target and index types cannot
-    /// be supplied.
+    /// be supplied. LOB targets own a locator transferred from the row, so a
+    /// given LOB column can be read only once per row.
     ///
     /// ```no_run
     /// use yashandb::{Connection, Error};
@@ -652,12 +779,15 @@ impl<'row> Row<'row> {
     /// # }
     /// ```
     #[inline]
-    pub fn get<T: convert::FromColumn<'row>>(&self, index: impl index::ColumnIndex) -> Result<T, Error> {
+    pub fn get<T: convert::FromColumn<'conn, 'row>>(&self, index: impl index::ColumnIndex) -> Result<T, Error>
+    where
+        'conn: 'row,
+    {
         let column = self.column(index.index(self.schema)?)?;
         T::from_column(&column)
     }
 
-    fn column(&self, index: usize) -> Result<Column<'row>, Error> {
+    fn column(&self, index: usize) -> Result<Column<'conn, 'row>, Error> {
         debug_assert_eq!(self.schema.len(), self.columns.len());
 
         let info = self.schema.get(index).ok_or(Error::ColumnIndexOutOfBounds {
@@ -675,9 +805,10 @@ impl<'row> Row<'row> {
         }
 
         Ok(Column {
-            index,
             info,
             buffer: column,
+            index,
+            pending_rebinds: self.pending_rebinds,
         })
     }
 }
