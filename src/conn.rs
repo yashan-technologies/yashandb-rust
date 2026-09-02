@@ -403,7 +403,7 @@ fn finish_result<T>(operation: Result<T, Error>, finish: Result<(), Error>) -> R
 pub enum TransactionIsolation {
     /// Read committed.
     ReadCommitted,
-    /// Current committed, a YashanDB-specific level.
+    /// Current committed, supported by older YashanDB server versions.
     CurrentCommitted,
     /// Serializable.
     Serializable,

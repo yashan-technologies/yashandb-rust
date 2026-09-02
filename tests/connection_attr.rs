@@ -72,7 +72,7 @@ fn builder_heartbeat_enabled_roundtrip() {
 }
 
 #[test]
-fn builder_accepts_attribute_boundaries_and_alternate_values() {
+fn builder_accepts_attribute_boundaries_and_serializable_isolation() {
     let Some((url, user, pass)) = setup() else {
         eprintln!("{}", skip_msg());
         return;
@@ -81,12 +81,12 @@ fn builder_accepts_attribute_boundaries_and_alternate_values() {
         .packet_size(64 * 1024)
         .auto_commit(true)
         .heartbeat_enabled(false)
-        .transaction_isolation(TransactionIsolation::CurrentCommitted)
+        .transaction_isolation(TransactionIsolation::Serializable)
         .connect(&url, &user, &pass)
-        .expect("connect should accept lower packet boundary and alternate attributes");
+        .expect("connect should accept lower packet boundary and serializable isolation");
     assert!(conn.packet_size() >= 64 * 1024);
     assert!(conn.auto_commit());
-    assert_eq!(conn.transaction_isolation(), TransactionIsolation::CurrentCommitted);
+    assert_eq!(conn.transaction_isolation(), TransactionIsolation::Serializable);
     let _ = conn.heartbeat_enabled();
 }
 
