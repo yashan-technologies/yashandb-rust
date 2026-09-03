@@ -33,6 +33,16 @@ fn connect_ok() {
 }
 
 #[test]
+fn connect_accepts_owned_strings() {
+    let Some((url, user, pass)) = setup() else {
+        eprintln!("{}", skip_msg());
+        return;
+    };
+    let conn = yashandb::Connection::connect(url, user, pass).expect("connect should succeed");
+    drop(conn);
+}
+
+#[test]
 fn connect_wrong_password_errors() {
     let Some((url, user, _)) = setup() else {
         eprintln!("{}", skip_msg());

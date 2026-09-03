@@ -55,7 +55,7 @@ impl Connection {
     /// - `standbyLoadBalance`: shuffle addresses, pick the standby node with
     ///   the fewest sessions
     #[inline]
-    pub fn connect(url: &str, username: &str, password: &str) -> Result<Self, Error> {
+    pub fn connect(url: impl AsRef<str>, username: impl AsRef<str>, password: impl AsRef<str>) -> Result<Self, Error> {
         Connection::builder().connect(url, username, password)
     }
 
@@ -545,7 +545,18 @@ impl ConnectionBuilder {
     }
 
     /// Establish a connection with the configured attributes applied.
-    pub fn connect(self, url: &str, username: &str, password: &str) -> Result<Connection, Error> {
+    #[inline]
+    pub fn connect(
+        self,
+        url: impl AsRef<str>,
+        username: impl AsRef<str>,
+        password: impl AsRef<str>,
+    ) -> Result<Connection, Error> {
+        self.connect_str(url.as_ref(), username.as_ref(), password.as_ref())
+    }
+
+    /// Establish a connection using string slices after public input conversion.
+    fn connect_str(self, url: &str, username: &str, password: &str) -> Result<Connection, Error> {
         let lib = library::library(None)?;
 
         let mut g = ConnectGuard::new(lib);
