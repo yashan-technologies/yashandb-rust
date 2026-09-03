@@ -348,6 +348,7 @@ impl<'conn> Statement<'conn> {
             YacType::Binary => DataTypeInfo::Binary {
                 size: self.column_size(id)?,
             },
+            YacType::Json => DataTypeInfo::Json,
             YacType::Blob => DataTypeInfo::Blob,
             YacType::Clob => DataTypeInfo::Clob,
             YacType::NClob => DataTypeInfo::Nclob,

@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::lob::{Blob, Clob};
+use crate::types::{Yason, YasonBuf};
 
 pub trait FromColumn<'conn, 'row>: Sized {
     fn from_column(column: &Column<'conn, 'row>) -> Result<Self, Error>;
@@ -43,7 +44,7 @@ macro_rules! impl_from_column {
                 c.read(
                     $name,
                     |actual| matches!(actual, $kind),
-                    |buffer| buffer.$read(c.index, c.pending_rebinds),
+                    |buffer| buffer.$read(c.index),
                 )?
             }
         }
@@ -53,7 +54,7 @@ macro_rules! impl_from_column {
                 c.read_optional(
                     $name,
                     |actual| matches!(actual, $kind),
-                    |buffer| buffer.$read(c.index, c.pending_rebinds),
+                    |buffer| buffer.$read(c.index),
                 )?
                 .transpose()
             }
@@ -98,6 +99,52 @@ impl_from_column!(
 impl_from_column!(borrow[u8], "&[u8]", DataTypeInfo::Binary { .. }, as_binary);
 impl_from_column!(Vec<u8>, "Vec<u8>", DataTypeInfo::Binary { .. }, as_vec);
 
+impl<'conn, 'row> FromColumn<'conn, 'row> for &'row Yason {
+    #[inline]
+    fn from_column(c: &Column<'conn, 'row>) -> Result<Self, Error> {
+        c.read(
+            "&Yason",
+            |actual| matches!(actual, DataTypeInfo::Json),
+            |buffer| buffer.as_yason(),
+        )?
+    }
+}
+
+impl<'conn, 'row> FromColumn<'conn, 'row> for Option<&'row Yason> {
+    #[inline]
+    fn from_column(c: &Column<'conn, 'row>) -> Result<Self, Error> {
+        c.read_optional(
+            "&Yason",
+            |actual| matches!(actual, DataTypeInfo::Json),
+            |buffer| buffer.as_yason(),
+        )?
+        .transpose()
+    }
+}
+
+impl<'conn, 'row> FromColumn<'conn, 'row> for YasonBuf {
+    #[inline]
+    fn from_column(c: &Column<'conn, 'row>) -> Result<Self, Error> {
+        c.read(
+            "YasonBuf",
+            |actual| matches!(actual, DataTypeInfo::Json),
+            |buffer| buffer.as_yason_buf(),
+        )?
+    }
+}
+
+impl<'conn, 'row> FromColumn<'conn, 'row> for Option<YasonBuf> {
+    #[inline]
+    fn from_column(c: &Column<'conn, 'row>) -> Result<Self, Error> {
+        c.read_optional(
+            "YasonBuf",
+            |actual| matches!(actual, DataTypeInfo::Json),
+            |buffer| buffer.as_yason_buf(),
+        )?
+        .transpose()
+    }
+}
+
 impl_from_column!(fallible Blob<'conn>, "Blob", DataTypeInfo::Blob, as_blob);
 
 impl<'conn, 'row> FromColumn<'conn, 'row> for Clob<'conn> {
@@ -106,7 +153,7 @@ impl<'conn, 'row> FromColumn<'conn, 'row> for Clob<'conn> {
         c.read(
             "Clob",
             |actual| matches!(actual, DataTypeInfo::Clob | DataTypeInfo::Nclob),
-            |buffer| buffer.as_clob(c.index, c.pending_rebinds, c.info.data_type_info),
+            |buffer| buffer.as_clob(c.index, c.info.data_type_info),
         )?
     }
 }
@@ -117,7 +164,7 @@ impl<'conn, 'row> FromColumn<'conn, 'row> for Option<Clob<'conn>> {
         c.read_optional(
             "Clob",
             |actual| matches!(actual, DataTypeInfo::Clob | DataTypeInfo::Nclob),
-            |buffer| buffer.as_clob(c.index, c.pending_rebinds, c.info.data_type_info),
+            |buffer| buffer.as_clob(c.index, c.info.data_type_info),
         )?
         .transpose()
     }

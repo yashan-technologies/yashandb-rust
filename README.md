@@ -16,6 +16,8 @@ synchronous, blocking connection to a YashanDB instance.
 - **Manual and scoped transactions** with explicit commit and rollback APIs.
 - **Connection-bound BLOB and CLOB locators** with positioned I/O, temporary
   LOBs, parameter binding, and streaming query extraction.
+- **JSON values** represented by `Yason` and `YasonBuf`, with query and
+  prepared-parameter support.
 
 ## MSRV
 
@@ -133,11 +135,32 @@ query result mapping is:
 | `INTERVAL DAY TO SECOND` | `IntervalDS` / `Option<IntervalDS>` |
 | `CHAR`, `NCHAR`, `VARCHAR`, `NVARCHAR` | `String`, `&str`, or their `Option<T>` forms |
 | `BINARY` | `Vec<u8>`, `&[u8]`, or their `Option<T>` forms |
+| `JSON` | `YasonBuf`, `&Yason`, or their `Option<T>` forms |
 | `BLOB` | `Blob` / `Option<Blob>` |
 | `CLOB`, `NCLOB` | `Clob` / `Option<Clob>` |
 
 `TIMESTAMP WITH [LOCAL] TIME ZONE` and unrecognized types remain visible in
 metadata but return an error only if that column is read.
+
+JSON query values can be read as `&Yason`, `YasonBuf`, or their optional forms.
+`&Yason` is valid only while the current row is borrowed; use `YasonBuf` when
+the value must be retained after fetching another row or finishing the result
+set. A non-optional target returns an error for SQL `NULL`, while an optional
+target receives `None`.
+
+```rust
+use yashandb::{Connection, Error, Yason, YasonBuf};
+
+fn read_json(conn: &mut Connection) -> Result<(YasonBuf, Option<YasonBuf>), Error> {
+    let mut rows = conn.query("select document, nullable_document from documents")?;
+    let row = rows.fetch()?.ok_or(Error::RowNotFound)?;
+    let borrowed: &Yason = row.get(0)?;
+    let owned = borrowed.to_owned();
+    let nullable: Option<YasonBuf> = row.get(1)?;
+    rows.finish()?;
+    Ok((owned, nullable))
+}
+```
 
 LOB columns are returned as connection-bound locators rather than being
 materialized automatically. `Blob` uses one-based byte offsets and byte
@@ -279,15 +302,36 @@ The supported parameter mappings are:
 | `IntervalDS` | `INTERVAL DAY TO SECOND` |
 | `&str`, `String` | `VARCHAR` |
 | `&[u8]`, `Vec<u8>` | `BINARY` |
+| `YasonBuf`, `&Yason` | `JSON` input |
 | `&Blob`, `Option<&Blob>` | `BLOB` input |
 | `&Clob`, `Option<&Clob>` | `CLOB` input |
 | `&mut Blob`, `&mut Option<Blob>` | `BLOB` output |
 | `&mut Clob`, `&mut Option<Clob>` | `CLOB` output |
+| `&mut YasonBuf`, `&mut Option<YasonBuf>` | `JSON` output |
 
 The corresponding `Option<T>` forms keep the same database type and add SQL
 `NULL` handling. LOB `in_out` parameters are not supported; use `input` for a
-LOB input and `output` for a LOB output. The complete accepted forms for
+LOB input and `output` for a LOB output. JSON `in_out` parameters are not
+supported; use separate `input` and `output` parameters. The complete accepted forms for
 `input`, `output`, and `in_out` are documented on those functions.
+
+Create JSON values with `YasonBuf::parse`, pass them to `input`, and use a
+mutable `YasonBuf` as an output target. Use `Option<YasonBuf>` when the input or
+output may be SQL `NULL`:
+
+```rust
+use yashandb::{Connection, Error, YasonBuf, input, output};
+
+fn write_json(conn: &mut Connection, value: YasonBuf) -> Result<YasonBuf, Error> {
+    let mut returned = YasonBuf::parse("null", false)
+        .map_err(|error| Error::InvalidArgument(error.to_string()))?;
+    conn.execute_with(
+        "insert into documents(document) values (?) returning document into ?",
+        [input(value), output(&mut returned)],
+    )?;
+    Ok(returned)
+}
+```
 
 Named parameters use a NUL-terminated `CString` or `&CStr`. Pass the name
 without the SQL placeholder prefix: `value` corresponds to `:value` in SQL.

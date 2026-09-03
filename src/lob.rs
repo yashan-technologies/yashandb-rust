@@ -53,7 +53,7 @@ impl<'conn> Lob<'conn> {
     }
 
     #[inline]
-    fn free_temporary(&self) -> Result<(), Error> {
+    fn free_temporary(&mut self) -> Result<(), Error> {
         self.with_handle(|lib, dbc, locator| lib.lob_free_temporary(dbc, locator))
     }
 
@@ -64,7 +64,7 @@ impl<'conn> Lob<'conn> {
     }
 
     #[inline]
-    fn free_temporary_if_needed(&self) -> Result<(), Error> {
+    fn free_temporary_if_needed(&mut self) -> Result<(), Error> {
         if self.locator.is_none() {
             return Ok(());
         }
@@ -80,6 +80,11 @@ impl<'conn> Lob<'conn> {
     #[inline]
     pub(crate) fn bind_output(&mut self) -> &mut [u8] {
         self.locator.as_mut().expect("live LOB locator").bind_output()
+    }
+
+    #[inline]
+    pub(crate) fn cleanup(&mut self) -> Result<(), Error> {
+        self.free_temporary_if_needed()
     }
 }
 
@@ -208,7 +213,7 @@ impl<'conn> Blob<'conn> {
     }
 
     /// Read the complete BLOB and append it to `output`.
-    pub fn read_to_end(&mut self, output: &mut Vec<u8>) -> Result<(), Error> {
+    pub fn read_to_end(&self, output: &mut Vec<u8>) -> Result<(), Error> {
         let len = self.len()?;
         if len > isize::MAX as u64 {
             return Err(Error::LobTooLarge { length: len });
@@ -267,7 +272,7 @@ impl<'conn> Blob<'conn> {
     }
 
     #[inline]
-    fn cleanup(&mut self) -> Result<(), Error> {
+    pub(crate) fn cleanup(&mut self) -> Result<(), Error> {
         // Do not free the descriptor here: Lob::drop owns that cleanup path.
         // The locator state prevents Drop from freeing a temporary LOB twice.
         self.lob.free_temporary_if_needed()
@@ -426,7 +431,7 @@ impl<'conn> Clob<'conn> {
     }
 
     /// Read the complete text LOB into `output`.
-    pub fn read_to_string(&mut self, output: &mut String) -> Result<(), Error> {
+    pub fn read_to_string(&self, output: &mut String) -> Result<(), Error> {
         let len = self.len()?;
         let ratio = self.charset_ratio()?;
         let bytes = len * ratio;

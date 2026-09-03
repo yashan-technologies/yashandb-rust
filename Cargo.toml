@@ -14,3 +14,4 @@ categories = ["database", "database-implementations"]
 libloading = "0.8"
 decimal-rs = "0.2.0"
 sqldatetime = { version = "0.3.0", features = ["oracle"] }
+yason = "0.1.1"

@@ -171,7 +171,7 @@ fn query_lobs_can_be_read_before_result_set_finish() {
         .unwrap();
     {
         let row = rows.fetch().unwrap().unwrap();
-        let mut blob = row.get::<yashandb::Blob<'_>>(1).unwrap();
+        let blob = row.get::<yashandb::Blob<'_>>(1).unwrap();
         assert!(matches!(
             row.get::<yashandb::Blob<'_>>(1),
             Err(Error::ColumnValueTransferred { index: 1 })
@@ -180,10 +180,10 @@ fn query_lobs_can_be_read_before_result_set_finish() {
         blob.read_to_end(&mut blob_value).unwrap();
         assert_eq!(blob_value, [1, 2, 3]);
         let mut clob_value = String::new();
-        let mut clob = row.get::<yashandb::Clob<'_>>(2).unwrap();
+        let clob = row.get::<yashandb::Clob<'_>>(2).unwrap();
         clob.read_to_string(&mut clob_value).unwrap();
         assert_eq!(clob_value, "查询");
-        let mut nclob = row.get::<yashandb::Clob<'_>>(3).unwrap();
+        let nclob = row.get::<yashandb::Clob<'_>>(3).unwrap();
         clob_value.clear();
         nclob.read_to_string(&mut clob_value).unwrap();
         assert_eq!(clob_value, "查询");
@@ -196,15 +196,15 @@ fn query_lobs_can_be_read_before_result_set_finish() {
     }
     {
         let row = rows.fetch().unwrap().unwrap();
-        let mut blob = row.get::<yashandb::Blob<'_>>(1).unwrap();
+        let blob = row.get::<yashandb::Blob<'_>>(1).unwrap();
         let mut blob_value = Vec::new();
         blob.read_to_end(&mut blob_value).unwrap();
         assert_eq!(blob_value, [4, 5, 6]);
-        let mut clob = row.get::<yashandb::Clob<'_>>(2).unwrap();
+        let clob = row.get::<yashandb::Clob<'_>>(2).unwrap();
         let mut clob_value = String::new();
         clob.read_to_string(&mut clob_value).unwrap();
         assert_eq!(clob_value, "第二行");
-        let mut nclob = row.get::<yashandb::Clob<'_>>(3).unwrap();
+        let nclob = row.get::<yashandb::Clob<'_>>(3).unwrap();
         clob_value.clear();
         nclob.read_to_string(&mut clob_value).unwrap();
         assert_eq!(clob_value, "第二行");
@@ -242,7 +242,7 @@ fn query_lobs_survive_later_fetch_and_result_set_finish() {
     rows.finish().unwrap();
 
     assert_eq!(lobs.len(), 2);
-    for (index, (mut blob, mut clob)) in lobs.into_iter().enumerate() {
+    for (index, (blob, clob)) in lobs.into_iter().enumerate() {
         let mut blob_value = Vec::new();
         blob.read_to_end(&mut blob_value).unwrap();
         let expected_blob = if index == 0 { [1, 2, 3] } else { [0xA0, 0xB0, 0xC0] };
@@ -291,7 +291,7 @@ fn lob_output_binds_non_nullable_and_nullable_values() {
     let mut clob_value = String::new();
     clob.read_to_string(&mut clob_value).unwrap();
     assert_eq!(clob_value, "output clob");
-    let mut nullable_blob = nullable_blob.unwrap();
+    let nullable_blob = nullable_blob.unwrap();
     let mut nullable_blob_value = Vec::new();
     nullable_blob.read_to_end(&mut nullable_blob_value).unwrap();
     assert_eq!(nullable_blob_value, b"nullable blob");

@@ -33,7 +33,7 @@ enum Value<'conn, 'param> {
 /// Converts a supported Rust value into an input parameter.
 ///
 /// Implementations are provided for the driver's supported scalar, date/time,
-/// interval, text, and binary Rust types, including `Option<T>` forms for SQL
+/// interval, text, binary, and JSON Rust types, including `Option<T>` forms for SQL
 /// `NULL`. This trait is used by [`input`] and is not an extension point.
 pub trait IntoBindParamIn<'conn, 'param> {
     /// Convert this value into a parameter.
@@ -69,6 +69,11 @@ pub trait IntoBindParamInOut<'conn, 'param> {
 /// `Option::<T>::None` binds a typed SQL `NULL`; the type annotation is needed
 /// when Rust cannot infer `T`.
 ///
+/// JSON input accepts `YasonBuf`, `&Yason`, and their optional forms. An owned
+/// `YasonBuf` is moved into the parameter, while a borrowed `Yason` remains
+/// borrowed until the statement finishes execution. Use `None` to send SQL
+/// `NULL`.
+///
 /// The supported Rust-to-SQL type mappings are:
 ///
 /// | Rust input | YashanDB/YACLI type |
@@ -88,6 +93,7 @@ pub trait IntoBindParamInOut<'conn, 'param> {
 /// | [`crate::IntervalDS`] / `Option<`[`crate::IntervalDS`]`>` | `INTERVAL DAY TO SECOND` |
 /// | `&str` / `String` and their `Option<T>` forms | `VARCHAR` |
 /// | `&[u8]` / `Vec<u8>` and their `Option<T>` forms | `BINARY` |
+/// | [`crate::YasonBuf`] / `&`[`crate::Yason`] and their `Option<T>` forms | `JSON` |
 /// | `&`[`crate::Blob`] / `Option<&`[`crate::Blob`]`>` | `BLOB` |
 /// | `&`[`crate::Clob`] / `Option<&`[`crate::Clob`]`>` | `CLOB` |
 ///
@@ -107,6 +113,10 @@ pub fn input<'conn, 'param>(value: impl IntoBindParamIn<'conn, 'param>) -> BindP
 ///
 /// If execution returns an error, output targets may already contain data
 /// written by the client. Do not rely on output target updates being atomic.
+///
+/// JSON output accepts `&mut YasonBuf` and `&mut Option<YasonBuf>`. The latter
+/// receives `None` when the database returns SQL `NULL`; a non-optional JSON
+/// target reports an error for SQL `NULL`.
 ///
 /// The supported Rust-to-SQL type mappings are:
 ///
@@ -133,6 +143,8 @@ pub fn input<'conn, 'param>(value: impl IntoBindParamIn<'conn, 'param>) -> BindP
 /// | `&mut `[`crate::Clob`] | `CLOB` |
 /// | `&mut Option<`[`crate::Blob`]`>` | nullable `BLOB` |
 /// | `&mut Option<`[`crate::Clob`]`>` | nullable `CLOB` |
+/// | `&mut `[`crate::YasonBuf`] | `JSON` |
+/// | `&mut Option<`[`crate::YasonBuf`]`>` | nullable `JSON` |
 ///
 /// `Option<T>` targets receive `None` when the database returns SQL `NULL`.
 /// `String` and `Vec<u8>` use their existing capacity as the output limit.
@@ -165,6 +177,8 @@ pub fn output<'conn, 'param>(target: impl IntoBindParamOut<'conn, 'param>) -> Bi
 /// `(&mut Option<Vec<u8>>, usize)` to provide a minimum buffer capacity.
 /// LOB input/output parameters are not supported. Use [`input`] or [`output`]
 /// for [`crate::Blob`] and [`crate::Clob`].
+/// JSON input/output parameters are not supported. Use [`input`] or [`output`]
+/// for [`crate::YasonBuf`] instead.
 #[inline]
 pub fn in_out<'conn, 'param>(target: impl IntoBindParamInOut<'conn, 'param>) -> BindParam<'conn, 'param> {
     target.into_bind_param_in_out()
@@ -174,7 +188,7 @@ impl<'conn, 'param> BindParam<'conn, 'param> {
     pub(crate) fn binding(&mut self, conn: &'conn Connection) -> Result<ParameterBinding<'_>, Error> {
         let (ext_type, value) = match &mut self.value {
             Value::Input(value) => {
-                let (ty, bytes) = value.native_value();
+                let (ty, bytes) = value.native_value(conn)?;
                 (ty, ParameterValue::Input(bytes))
             }
             Value::Output(value) => {

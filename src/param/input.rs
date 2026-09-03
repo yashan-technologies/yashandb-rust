@@ -2,7 +2,7 @@
 
 use super::{BindParam, IntoBindParamIn, Value, bytes_of, indicator};
 use crate::ffi::YacExtType;
-use crate::types::{Date, IntervalDS, IntervalYM, Number, Time, Timestamp, YacNumber, YacTimestamp};
+use crate::types::{Date, IntervalDS, IntervalYM, Number, Time, Timestamp, YacNumber, YacTimestamp, Yason, YasonBuf};
 use crate::{Blob, Clob};
 use std::borrow::Cow;
 
@@ -22,13 +22,20 @@ pub(super) enum Input<'conn, 'param> {
     IntervalDS(Option<IntervalDS>),
     Text(Option<Cow<'param, str>>),
     Binary(Option<Cow<'param, [u8]>>),
+    Json {
+        value: Option<Cow<'param, Yason>>,
+        temporary_blob: Option<Blob<'conn>>,
+    },
     Blob(Option<&'param Blob<'conn>>),
     Clob(Option<&'param Clob<'conn>>),
 }
 
-impl Input<'_, '_> {
-    pub(super) fn native_value(&mut self) -> (YacExtType, &[u8]) {
-        match self {
+impl<'conn, 'param> Input<'conn, 'param> {
+    pub(super) fn native_value(
+        &mut self,
+        conn: &'conn crate::conn::Connection,
+    ) -> Result<(YacExtType, &[u8]), crate::Error> {
+        let value: (YacExtType, &[u8]) = match self {
             Input::Bool(v) => (YacExtType::Bool, scalar_value(v)),
             Input::I8(v) => (YacExtType::TinyInt, scalar_value(v)),
             Input::I16(v) => (YacExtType::SmallInt, scalar_value(v)),
@@ -47,11 +54,25 @@ impl Input<'_, '_> {
                 v.as_deref().map(str::as_bytes).unwrap_or_default(),
             ),
             Input::Binary(v) => (YacExtType::Binary2, v.as_deref().unwrap_or_default()),
+            Input::Json { value, temporary_blob } => {
+                *temporary_blob = None;
+                let Some(value) = value.as_deref() else {
+                    return Ok((YacExtType::Json, &[]));
+                };
+                let mut blob = Blob::temporary(conn)?;
+                blob.append(value.as_bytes())?;
+                *temporary_blob = Some(blob);
+                (
+                    YacExtType::Json,
+                    temporary_blob.as_ref().expect("temporary JSON BLOB").bind_input(),
+                )
+            }
             // `bind_input` returns the bytes of the locator-pointer variable;
             // its address is passed to YACLI as `YacLobLocator **`.
             Input::Blob(v) => (YacExtType::Blob, v.map(|v| v.bind_input()).unwrap_or_default()),
             Input::Clob(v) => (YacExtType::Clob, v.map(|v| v.bind_input()).unwrap_or_default()),
-        }
+        };
+        Ok(value)
     }
 }
 
@@ -440,6 +461,77 @@ impl<'conn, 'param> IntoBindParamIn<'conn, 'param> for Option<Vec<u8>> {
             .map_or(crate::ffi::NULL_DATA, |value| indicator(value.len()));
         BindParam {
             value: Value::Input(Input::Binary(self.map(Cow::Owned))),
+            indicator,
+        }
+    }
+}
+
+impl<'conn, 'param> IntoBindParamIn<'conn, 'param> for &'param Yason {
+    #[inline]
+    fn into_bind_param_in(self) -> BindParam<'conn, 'param> {
+        BindParam {
+            value: Value::Input(Input::Json {
+                value: Some(Cow::Borrowed(self)),
+                temporary_blob: None,
+            }),
+            indicator: indicator(self.as_bytes().len()),
+        }
+    }
+}
+
+impl<'conn, 'param> IntoBindParamIn<'conn, 'param> for Option<&'param Yason> {
+    #[inline]
+    fn into_bind_param_in(self) -> BindParam<'conn, 'param> {
+        let indicator = self.map_or(crate::ffi::NULL_DATA, |value| indicator(value.as_bytes().len()));
+        BindParam {
+            value: Value::Input(Input::Json {
+                value: self.map(Cow::Borrowed),
+                temporary_blob: None,
+            }),
+            indicator,
+        }
+    }
+}
+
+impl<'conn, 'param> IntoBindParamIn<'conn, 'param> for &'param YasonBuf {
+    #[inline]
+    fn into_bind_param_in(self) -> BindParam<'conn, 'param> {
+        self.as_ref().into_bind_param_in()
+    }
+}
+
+impl<'conn, 'param> IntoBindParamIn<'conn, 'param> for Option<&'param YasonBuf> {
+    #[inline]
+    fn into_bind_param_in(self) -> BindParam<'conn, 'param> {
+        self.map(AsRef::as_ref).into_bind_param_in()
+    }
+}
+
+impl<'conn, 'param> IntoBindParamIn<'conn, 'param> for YasonBuf {
+    #[inline]
+    fn into_bind_param_in(self) -> BindParam<'conn, 'param> {
+        let indicator = indicator(self.as_bytes().len());
+        BindParam {
+            value: Value::Input(Input::Json {
+                value: Some(Cow::Owned(self)),
+                temporary_blob: None,
+            }),
+            indicator,
+        }
+    }
+}
+
+impl<'conn, 'param> IntoBindParamIn<'conn, 'param> for Option<YasonBuf> {
+    #[inline]
+    fn into_bind_param_in(self) -> BindParam<'conn, 'param> {
+        let indicator = self
+            .as_ref()
+            .map_or(crate::ffi::NULL_DATA, |value| indicator(value.as_bytes().len()));
+        BindParam {
+            value: Value::Input(Input::Json {
+                value: self.map(Cow::Owned),
+                temporary_blob: None,
+            }),
             indicator,
         }
     }

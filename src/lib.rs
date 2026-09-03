@@ -177,8 +177,15 @@
 //! | `INTERVAL DAY TO SECOND` | [`IntervalDS`] / `Option<`[`IntervalDS`]`>` |
 //! | `CHAR`, `NCHAR`, `VARCHAR`, `NVARCHAR` | `String`, `&str`, or their `Option<T>` forms |
 //! | `BINARY` | `Vec<u8>`, `&[u8]`, or their `Option<T>` forms |
+//! | `JSON` | [`YasonBuf`], [`Yason`], or their `Option<T>` forms |
 //! | `BLOB` | [`Blob`] / `Option<`[`Blob`]`>` |
 //! | `CLOB`, `NCLOB` | [`Clob`] / `Option<`[`Clob`]`>` |
+//!
+//! JSON query values can be read as [`Yason`], [`YasonBuf`], or their optional
+//! forms. A borrowed [`Yason`] is valid only while the current row is borrowed;
+//! use [`YasonBuf`] when the value must outlive the row. Reading JSON SQL `NULL`
+//! into a non-optional target returns [`Error::NullValue`], while an optional
+//! target receives `None`.
 //!
 //! LOB query values are locators, not eagerly materialized contents. Extract a
 //! [`Blob`] or [`Clob`] with [`Row::get`], use its positioned I/O methods, and
@@ -237,14 +244,21 @@
 //! | [`IntervalDS`] / `Option<`[`IntervalDS`]`>` | `INTERVAL DAY TO SECOND` |
 //! | `&str` / `String` and their `Option<T>` forms | `VARCHAR` |
 //! | `&[u8]` / `Vec<u8>` and their `Option<T>` forms | `BINARY` |
+//! | [`YasonBuf`] / `&`[`Yason`] and their `Option<T>` forms | `JSON` input |
+//! | `&mut `[`YasonBuf`] / `&mut Option<`[`YasonBuf`]`>` | `JSON` output |
 //! | `&`[`Blob`] / `Option<&`[`Blob`]`>` | `BLOB` input |
-//! | `&`[`Clob`] / `Option<&`[`Clob`]`>` | `CLOB` input |
 //! | `&mut `[`Blob`] / `&mut Option<`[`Blob`]`>` | `BLOB` output |
+//! | `&`[`Clob`] / `Option<&`[`Clob`]`>` | `CLOB` input |
 //! | `&mut `[`Clob`] / `&mut Option<`[`Clob`]`>` | `CLOB` output |
 //!
 //! The corresponding `Option<T>` input and output forms keep the same database
 //! type and add SQL `NULL` handling. LOB `in_out` parameters are not supported;
 //! use [`input`] or [`output`] for LOB parameters.
+//! JSON `in_out` parameters are not supported; use separate [`input`] and
+//! [`output`] parameters instead.
+//! Create JSON values with [`YasonBuf::parse`]. Use [`YasonBuf`] for owned
+//! values, [`Yason`] for borrowed input, and `Option` forms when SQL `NULL` is
+//! allowed.
 //!
 //! ```no_run
 //! # use yashandb::{Connection, Error, in_out, named, output};
@@ -308,4 +322,4 @@ pub use param::{BindParam, NamedBindParam, in_out, input, named, output};
 pub use result_set::{ResultSet, Row};
 pub use stmt::{ExecResult, Statement};
 pub use transaction::Transaction;
-pub use types::{Date, IntervalDS, IntervalYM, Number, Time, Timestamp};
+pub use types::{Date, IntervalDS, IntervalYM, Number, Time, Timestamp, Yason, YasonBuf};

@@ -1,9 +1,9 @@
 //! Native storage bound to result columns.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell, UnsafeCell};
 use std::mem::MaybeUninit;
 
-use crate::lob::Lob;
+use crate::lob::{Blob, Lob};
 use crate::types::{Date, IntervalDS, IntervalYM, Time, YacNumber, YacTimestamp};
 
 /// Storage bound to a result column for one fetched row.
@@ -28,6 +28,7 @@ pub(super) enum ColumnBinding<'conn> {
     IntervalDS(IntervalDS),
     Text(Vec<MaybeUninit<u8>>),
     Binary(Vec<MaybeUninit<u8>>),
+    Json(RefCell<Blob<'conn>>, UnsafeCell<Vec<u8>>, Cell<bool>),
     Lob(RefCell<Lob<'conn>>),
 }
 
@@ -167,6 +168,14 @@ impl ColumnBinding<'_> {
         // This is a byte view of the `YacLobLocator *` variable held by the
         // wrapper. `bind_column` passes the view's address as `YacLobLocator **`,
         // as required by the C driver, rather than passing locator contents.
+        locator.get_mut().bind_output()
+    }
+
+    #[inline]
+    pub(super) fn json_buffer(&mut self) -> &mut [u8] {
+        let Self::Json(locator, _, _) = self else {
+            unreachable!("JSON binding accessor requires a JSON locator")
+        };
         locator.get_mut().bind_output()
     }
 }

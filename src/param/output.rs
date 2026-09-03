@@ -4,7 +4,7 @@ use super::{BindParam, IntoBindParamInOut, IntoBindParamOut, Value, bytes_of, in
 use crate::conn::Connection;
 use crate::error::Error;
 use crate::ffi::{NULL_DATA, YacExtType};
-use crate::types::{Date, IntervalDS, IntervalYM, Number, Time, Timestamp, YacNumber, YacTimestamp};
+use crate::types::{Date, IntervalDS, IntervalYM, Number, Time, Timestamp, YacNumber, YacTimestamp, YasonBuf};
 use crate::{Blob, Clob};
 
 pub(super) enum Output<'conn, 'param> {
@@ -38,6 +38,8 @@ pub(super) enum Output<'conn, 'param> {
     TextNullable(&'param mut Option<String>, Option<Vec<u8>>, usize),
     Binary(&'param mut Vec<u8>),
     BinaryNullable(&'param mut Option<Vec<u8>>, Option<Vec<u8>>, usize),
+    Json(&'param mut YasonBuf, Option<Blob<'conn>>),
+    JsonNullable(&'param mut Option<YasonBuf>, Option<Blob<'conn>>),
     Blob(&'param mut Blob<'conn>),
     BlobNullable(&'param mut Option<Blob<'conn>>, Option<Blob<'conn>>),
     Clob(&'param mut Clob<'conn>),
@@ -90,6 +92,10 @@ impl<'conn, 'param> Output<'conn, 'param> {
                 (YacExtType::Binary2, unsafe {
                     std::slice::from_raw_parts_mut(native.as_mut_ptr(), native.capacity())
                 })
+            }
+            Output::Json(_, value) | Output::JsonNullable(_, value) => {
+                let value = value.get_or_insert(Blob::output(conn)?);
+                (YacExtType::Json, value.bind_output())
             }
             // The mutable bytes are the locator-pointer variable itself. YACLI
             // receives its address (`YacLobLocator **`) and updates that
@@ -168,6 +174,35 @@ impl<'conn, 'param> Output<'conn, 'param> {
                     **t = Some(std::mem::take(n));
                 }
             }
+            Output::Json(target, value) => {
+                if indicator == NULL_DATA {
+                    return Err(Error::InvalidArgument(
+                        "SQL NULL cannot be written to a non-optional JSON output parameter".into(),
+                    ));
+                }
+                let mut bytes = Vec::new();
+                value
+                    .as_mut()
+                    .expect("JSON output locator was not initialized")
+                    .read_to_end(&mut bytes)?;
+                // JSON values returned by the database are encoded as valid YASON.
+                **target = unsafe { YasonBuf::new_unchecked(bytes) };
+                *value = None;
+            }
+            Output::JsonNullable(target, value) => {
+                if indicator == NULL_DATA {
+                    **target = None;
+                } else {
+                    let mut bytes = Vec::new();
+                    value
+                        .as_mut()
+                        .expect("JSON output locator was not initialized")
+                        .read_to_end(&mut bytes)?;
+                    // JSON values returned by the database are encoded as valid YASON.
+                    **target = Some(unsafe { YasonBuf::new_unchecked(bytes) });
+                }
+                *value = None;
+            }
             Output::Blob(_) | Output::Clob(_) => {
                 if indicator == NULL_DATA {
                     return Err(Error::InvalidArgument(
@@ -217,6 +252,26 @@ fn nullable_binary_buffer(target: &mut Option<Vec<u8>>, capacity: usize) -> Vec<
     let mut native = target.take().unwrap_or_default();
     native.reserve(capacity.saturating_sub(native.len()));
     native
+}
+
+impl<'conn, 'param> IntoBindParamOut<'conn, 'param> for &'param mut YasonBuf {
+    #[inline]
+    fn into_bind_param_out(self) -> BindParam<'conn, 'param> {
+        BindParam {
+            value: Value::Output(Output::Json(self, None)),
+            indicator: 0,
+        }
+    }
+}
+
+impl<'conn, 'param> IntoBindParamOut<'conn, 'param> for &'param mut Option<YasonBuf> {
+    #[inline]
+    fn into_bind_param_out(self) -> BindParam<'conn, 'param> {
+        BindParam {
+            value: Value::Output(Output::JsonNullable(self, None)),
+            indicator: 0,
+        }
+    }
 }
 
 impl<'conn, 'param> IntoBindParamOut<'conn, 'param> for &'param mut bool {

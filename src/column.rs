@@ -44,6 +44,8 @@ pub enum DataType {
     NVarChar,
     /// Binary data.
     Binary,
+    /// JSON data.
+    Json,
     /// Binary large object.
     Blob,
     /// Character large object.
@@ -126,6 +128,8 @@ pub enum DataTypeInfo {
         /// Maximum byte length.
         size: u32,
     },
+    /// JSON data.
+    Json,
     /// Binary large object.
     Blob,
     /// Character large object.
@@ -161,6 +165,7 @@ impl DataTypeInfo {
             Self::VarChar { .. } => DataType::VarChar,
             Self::NVarChar { .. } => DataType::NVarChar,
             Self::Binary { .. } => DataType::Binary,
+            Self::Json => DataType::Json,
             Self::Blob => DataType::Blob,
             Self::Clob => DataType::Clob,
             Self::Nclob => DataType::Nclob,
@@ -237,6 +242,7 @@ mod tests {
             (DataTypeInfo::VarChar { size: 8, char_size: 8 }, DataType::VarChar),
             (DataTypeInfo::NVarChar { size: 8, char_size: 8 }, DataType::NVarChar),
             (DataTypeInfo::Binary { size: 8 }, DataType::Binary),
+            (DataTypeInfo::Json, DataType::Json),
             (DataTypeInfo::Other(255), DataType::Other(255)),
         ];
 

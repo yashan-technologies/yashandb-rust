@@ -12,7 +12,7 @@ use crate::error::Error;
 use crate::ffi::{NULL_DATA, YacExtType};
 use crate::lob::{Blob, Clob, Lob};
 use crate::stmt::Statement;
-use crate::types::{Date, IntervalDS, IntervalYM, Number, Time, Timestamp, YacNumber, YacTimestamp};
+use crate::types::{Date, IntervalDS, IntervalYM, Number, Time, Timestamp, YacNumber, YacTimestamp, Yason, YasonBuf};
 
 use self::binding::ColumnBinding;
 
@@ -28,6 +28,7 @@ pub struct ResultSet<'conn, 'stmt> {
     schema: Vec<ColumnInfo>,
     columns: Vec<ColumnBuffer<'conn>>,
     has_rebindable_columns: bool,
+    rebind_columns: Vec<usize>,
     pending_rebinds: RefCell<Vec<usize>>,
     eof: bool,
 }
@@ -58,13 +59,14 @@ impl<'conn> ResultSet<'conn, 'conn> {
     #[inline]
     pub(crate) fn from_stmt(mut stmt: Statement<'conn>) -> Result<Self, Error> {
         let schema = stmt.schema()?;
-        let (columns, has_rebindable_columns) = bind_columns(&mut stmt, &schema)?;
+        let (columns, has_rebindable_columns, rebind_columns) = bind_columns(&mut stmt, &schema)?;
 
         Ok(Self {
             statement: StatementAccess::Owned(stmt),
             schema,
             columns,
             has_rebindable_columns,
+            rebind_columns,
             pending_rebinds: RefCell::new(Vec::new()),
             eof: false,
         })
@@ -84,7 +86,7 @@ where
                 return Err(error);
             }
         };
-        let (columns, has_rebindable_columns) = match bind_columns(stmt, &schema) {
+        let (columns, has_rebindable_columns, rebind_columns) = match bind_columns(stmt, &schema) {
             Ok(result) => result,
             Err(error) => {
                 let _ = stmt.finish_result();
@@ -97,6 +99,7 @@ where
             schema,
             columns,
             has_rebindable_columns,
+            rebind_columns,
             pending_rebinds: RefCell::new(Vec::new()),
             eof: false,
         })
@@ -116,7 +119,7 @@ where
     /// Fetch the next row, or `Ok(None)` at end of result set.
     ///
     /// Each row borrows this result set's current binding buffers. Borrowed
-    /// `&str` and `&[u8]` values returned by [`Row::get`] remain valid only for
+    /// `&str`, `&[u8]`, and `&Yason` values returned by [`Row::get`] remain valid only for
     /// as long as the returned row is borrowed. Once end of result set is
     /// reached, subsequent calls return `Ok(None)` without calling the client.
     #[inline]
@@ -132,11 +135,15 @@ where
                 self.eof = true;
                 Ok(None)
             }
-            1 => Ok(Some(Row {
-                schema: &self.schema,
-                columns: &self.columns,
-                pending_rebinds: &self.pending_rebinds,
-            })),
+            1 => {
+                if !self.rebind_columns.is_empty() {
+                    self.pending_rebinds.get_mut().extend_from_slice(&self.rebind_columns);
+                }
+                Ok(Some(Row {
+                    schema: &self.schema,
+                    columns: &self.columns,
+                }))
+            }
             rows => Err(Error::Internal(format!(
                 "client returned {rows} rows for rowset size 1"
             ))),
@@ -153,6 +160,12 @@ where
             match info {
                 DataTypeInfo::Blob | DataTypeInfo::Clob | DataTypeInfo::Nclob => {
                     if let Err(error) = rebind_lob_column(statement, &mut columns[index], index, info) {
+                        failure = Some((position, error));
+                        break;
+                    }
+                }
+                DataTypeInfo::Json => {
+                    if let Err(error) = rebind_json_column(statement, &mut columns[index], index) {
                         failure = Some((position, error));
                         break;
                     }
@@ -198,10 +211,11 @@ impl Drop for ResultSet<'_, '_> {
 fn bind_columns<'conn>(
     stmt: &mut Statement<'conn>,
     schema: &[ColumnInfo],
-) -> Result<(Vec<ColumnBuffer<'conn>>, bool), Error> {
+) -> Result<(Vec<ColumnBuffer<'conn>>, bool, Vec<usize>), Error> {
     let (ratio, nratio) = stmt.charset_ratios()?;
     let mut columns = Vec::with_capacity(schema.len());
     let mut has_rebindable_columns = false;
+    let mut rebind_columns = Vec::new();
 
     for (index, info) in schema.iter().enumerate() {
         match info.data_type_info {
@@ -370,8 +384,28 @@ fn bind_columns<'conn>(
                     &mut column.indicator,
                 )?;
             }
+            DataTypeInfo::Json => {
+                has_rebindable_columns = true;
+                rebind_columns.push(index);
+                let locator = Blob::from_lob(Lob::new(stmt.connection())?);
+                let column = push_column(
+                    &mut columns,
+                    ColumnBinding::Json(
+                        RefCell::new(locator),
+                        std::cell::UnsafeCell::new(Vec::new()),
+                        std::cell::Cell::new(false),
+                    ),
+                );
+                stmt.bind_column(
+                    index as u16,
+                    YacExtType::Json,
+                    column.binding.json_buffer(),
+                    &mut column.indicator,
+                )?;
+            }
             DataTypeInfo::Blob | DataTypeInfo::Clob | DataTypeInfo::Nclob => {
                 has_rebindable_columns = true;
+                rebind_columns.push(index);
                 let locator = Lob::new(stmt.connection())?;
                 let column = push_column(&mut columns, ColumnBinding::Lob(RefCell::new(locator)));
                 stmt.bind_column(
@@ -393,7 +427,7 @@ fn bind_columns<'conn>(
         }
     }
 
-    Ok((columns, has_rebindable_columns))
+    Ok((columns, has_rebindable_columns, rebind_columns))
 }
 
 fn rebind_lob_column<'conn>(
@@ -402,9 +436,20 @@ fn rebind_lob_column<'conn>(
     index: usize,
     info: DataTypeInfo,
 ) -> Result<(), Error> {
-    debug_assert!(matches!(&column.binding, ColumnBinding::Lob(lob) if !lob.borrow().is_live()));
-    let locator = Lob::new(statement.connection())?;
-    column.binding = ColumnBinding::Lob(RefCell::new(locator));
+    let ColumnBinding::Lob(lob) = &column.binding else {
+        unreachable!("LOB column requires a LOB binding")
+    };
+    let locator = if lob.borrow().is_live() {
+        // The locator was not transferred to a user: release a temporary LOB
+        // from the previous row, if any, and reuse the same descriptor.
+        lob.borrow_mut().cleanup()?;
+        None
+    } else {
+        Some(Lob::new(statement.connection())?)
+    };
+    if let Some(locator) = locator {
+        column.binding = ColumnBinding::Lob(RefCell::new(locator));
+    }
     column.indicator = 0;
     let ext_type = if matches!(info, DataTypeInfo::Blob) {
         YacExtType::Blob
@@ -416,6 +461,26 @@ fn rebind_lob_column<'conn>(
         index as u16,
         ext_type,
         column.binding.lob_buffer(),
+        &mut column.indicator,
+    )
+}
+
+fn rebind_json_column<'conn>(
+    statement: &mut Statement<'conn>,
+    column: &mut ColumnBuffer<'conn>,
+    index: usize,
+) -> Result<(), Error> {
+    let ColumnBinding::Json(blob, bytes, loaded) = &mut column.binding else {
+        unreachable!("JSON rebind requires a JSON binding")
+    };
+    blob.get_mut().cleanup()?;
+    unsafe { &mut *bytes.get() }.clear();
+    loaded.set(false);
+    column.indicator = 0;
+    statement.bind_column(
+        index as u16,
+        YacExtType::Json,
+        column.binding.json_buffer(),
         &mut column.indicator,
     )
 }
@@ -547,18 +612,40 @@ impl<'conn> ColumnBuffer<'conn> {
     }
 
     #[inline]
-    fn as_blob(&self, index: usize, pending_rebinds: &RefCell<Vec<usize>>) -> Result<Blob<'conn>, Error> {
-        self.take_lob(index, pending_rebinds).map(Blob::from_lob)
+    fn as_yason(&self) -> Result<&Yason, Error> {
+        debug_assert_ne!(self.indicator, NULL_DATA, "cannot read a NULL column value");
+        let ColumnBinding::Json(blob, bytes, loaded) = &self.binding else {
+            unreachable!("JSON column requires a JSON binding")
+        };
+        if !loaded.get() {
+            let result = {
+                let bytes = unsafe { &mut *bytes.get() };
+                bytes.clear();
+                blob.borrow().read_to_end(bytes)
+            };
+            if let Err(error) = result {
+                unsafe { &mut *bytes.get() }.clear();
+                return Err(error);
+            }
+            loaded.set(true);
+        }
+        let bytes = unsafe { &*bytes.get() };
+        Ok(unsafe { Yason::new_unchecked(bytes) })
     }
 
     #[inline]
-    fn as_clob(
-        &self,
-        index: usize,
-        pending_rebinds: &RefCell<Vec<usize>>,
-        data_type_info: DataTypeInfo,
-    ) -> Result<Clob<'conn>, Error> {
-        self.take_lob(index, pending_rebinds).map(|lob| {
+    fn as_yason_buf(&self) -> Result<YasonBuf, Error> {
+        Ok(self.as_yason()?.to_owned())
+    }
+
+    #[inline]
+    fn as_blob(&self, index: usize) -> Result<Blob<'conn>, Error> {
+        self.take_lob(index).map(Blob::from_lob)
+    }
+
+    #[inline]
+    fn as_clob(&self, index: usize, data_type_info: DataTypeInfo) -> Result<Clob<'conn>, Error> {
+        self.take_lob(index).map(|lob| {
             let lob_type = match data_type_info {
                 DataTypeInfo::Nclob => crate::ffi::YacTempLobType::NClob,
                 _ => crate::ffi::YacTempLobType::Clob,
@@ -568,13 +655,11 @@ impl<'conn> ColumnBuffer<'conn> {
     }
 
     #[inline]
-    fn take_lob(&self, index: usize, pending_rebinds: &RefCell<Vec<usize>>) -> Result<Lob<'conn>, Error> {
+    fn take_lob(&self, index: usize) -> Result<Lob<'conn>, Error> {
         let ColumnBinding::Lob(lob) = &self.binding else {
             unreachable!("LOB column requires a LOB binding")
         };
-        let lob = lob.borrow_mut().take().ok_or(Error::ColumnValueTransferred { index })?;
-        pending_rebinds.borrow_mut().push(index);
-        Ok(lob)
+        lob.borrow_mut().take().ok_or(Error::ColumnValueTransferred { index })
     }
 
     #[inline]
@@ -642,7 +727,6 @@ pub struct Column<'conn: 'row, 'row> {
     info: &'row ColumnInfo,
     buffer: &'row ColumnBuffer<'conn>,
     index: usize,
-    pending_rebinds: &'row RefCell<Vec<usize>>,
 }
 
 impl<'conn: 'row, 'row> Column<'conn, 'row> {
@@ -701,7 +785,6 @@ impl<'conn: 'row, 'row> Column<'conn, 'row> {
 pub struct Row<'conn: 'row, 'row> {
     schema: &'row [ColumnInfo],
     columns: &'row [ColumnBuffer<'conn>],
-    pending_rebinds: &'row RefCell<Vec<usize>>,
 }
 
 impl<'conn: 'row, 'row> Row<'conn, 'row> {
@@ -744,6 +827,7 @@ impl<'conn: 'row, 'row> Row<'conn, 'row> {
     /// | `INTERVAL DAY TO SECOND` | [`IntervalDS`] |
     /// | `CHAR`, `VARCHAR`, `NCHAR`, `NVARCHAR` | `String` or `&str` |
     /// | `BINARY` | `Vec<u8>` or `&[u8]` |
+    /// | `JSON` | [`crate::YasonBuf`] or `&`[`crate::Yason`] |
     /// | `BLOB` | [`crate::Blob`] |
     /// | `CLOB`, `NCLOB` | [`crate::Clob`] |
     ///
@@ -752,7 +836,9 @@ impl<'conn: 'row, 'row> Row<'conn, 'row> {
     /// [`Error::UnsupportedColumnType`]. Wrap any mapped type in `Option`, such
     /// as `Option<String>`, to read a database `NULL`; requesting a
     /// non-optional type for `NULL` returns [`Error::NullValue`]. Borrowed text
-    /// and binary values are valid only for as long as the row is borrowed.
+    /// and binary values are valid only for as long as the row is borrowed. A
+    /// borrowed [`crate::Yason`] has the same lifetime restriction. An owned
+    /// [`crate::YasonBuf`] can be retained after the row and result set are gone.
     ///
     /// Returns an error when the index or name is absent, the driver cannot
     /// represent the column type, the target type does not match, or text data
@@ -764,7 +850,8 @@ impl<'conn: 'row, 'row> Row<'conn, 'row> {
     /// that column is read. The supported target types are exactly the table
     /// entries and their `Option` wrappers; custom target and index types cannot
     /// be supplied. LOB targets own a locator transferred from the row, so a
-    /// given LOB column can be read only once per row.
+    /// given LOB column can be read only once per row. JSON targets do not expose a
+    /// LOB and can be read repeatedly from the same row.
     ///
     /// ```no_run
     /// use yashandb::{Connection, Error};
@@ -808,7 +895,6 @@ impl<'conn: 'row, 'row> Row<'conn, 'row> {
             info,
             buffer: column,
             index,
-            pending_rebinds: self.pending_rebinds,
         })
     }
 }

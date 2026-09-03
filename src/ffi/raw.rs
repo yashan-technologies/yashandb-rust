@@ -117,6 +117,7 @@ pub enum YacExtType {
     Clob = 29,
     Blob = 30,
     NClob = 33,
+    Json = 35,
     Char2 = 100,
     Varchar2 = 101,
     Binary2 = 102,

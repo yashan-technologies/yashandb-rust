@@ -10,6 +10,16 @@ pub use sqldatetime::OracleDate as Date;
 pub use sqldatetime::Time;
 /// Timestamp without a time zone.
 pub use sqldatetime::Timestamp;
+/// Borrowed YashanDB JSON value in YASON format.
+///
+/// Use this type for a borrowed JSON query result. A value obtained as `&Yason`
+/// is valid only while the current [`crate::Row`] is borrowed.
+pub use yason::Yason;
+/// Owned YashanDB JSON value in YASON format.
+///
+/// Use this type when a JSON value must outlive the current query row, or as an
+/// input value or output target.
+pub use yason::YasonBuf;
 
 /// Database NUMBER value.
 ///
