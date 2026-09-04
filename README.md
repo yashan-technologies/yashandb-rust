@@ -29,9 +29,10 @@ The minimum supported Rust version is **1.95**.
 
 ## Requirements
 
-- A YashanDB client library (`yascli`) installed on the machine. The driver
-  finds it automatically from the default search path, or from the per-user
-  install location `$HOME/.yashandb/client/lib` (Linux/macOS) or
+- A YashanDB client library (`yascli`) installed on the machine. The C driver
+  client can be downloaded from the [YashanDB client releases](https://github.com/yashan-technologies/yashandb-client/releases).
+  The driver finds it automatically from the default search path, or from the
+  per-user install location `$HOME/.yashandb/client/lib` (Linux/macOS) or
   `%USERPROFILE%\.yashandb\client\lib` (Windows).
 - A reachable YashanDB instance to connect to.
 
