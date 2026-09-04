@@ -1,5 +1,9 @@
 # YashanDB Rust Driver
 
+[![Apache-2.0 licensed](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Crate](https://img.shields.io/crates/v/yashandb.svg)](https://crates.io/crates/yashandb)
+[![API](https://docs.rs/yashandb/badge.svg)](https://docs.rs/yashandb)
+
 An official Rust driver for [YashanDB](https://www.yashandb.com). It provides a
 synchronous, blocking connection to a YashanDB instance.
 
