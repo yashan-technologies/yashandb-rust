@@ -1,0 +1,288 @@
+name: Rust CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUST_TOOLCHAIN: 1.95.0
+
+jobs:
+  rust-checks-linux:
+    name: Rust checks (Linux)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: rustfmt, clippy
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: linux-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --all-features --all-targets
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Run Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Run tests without database environment
+        shell: bash
+        run: |
+          unset YASCLI_HOME YASDB_URL YASDB_USER YASDB_PASSWORD LD_LIBRARY_PATH
+          cargo test --all-targets --all-features
+
+  rust-checks-windows:
+    name: Rust checks (Windows)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: rustfmt, clippy
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~\.cargo\registry
+            ~\.cargo\git
+            target
+          key: windows-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --all-features --all-targets
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Run Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Run tests without database environment
+        shell: powershell
+        run: |
+          Remove-Item Env:YASCLI_HOME -ErrorAction SilentlyContinue
+          Remove-Item Env:YASDB_URL -ErrorAction SilentlyContinue
+          Remove-Item Env:YASDB_USER -ErrorAction SilentlyContinue
+          Remove-Item Env:YASDB_PASSWORD -ErrorAction SilentlyContinue
+          Remove-Item Env:LD_LIBRARY_PATH -ErrorAction SilentlyContinue
+          cargo test --all-targets --all-features
+
+  integration-linux:
+    name: Integration tests (Linux + YashanDB)
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      YASDB_URL: 127.0.0.1:1688
+      YASDB_USER: sys
+      YASDB_PASSWORD: ${{ secrets.YASHANDB_SYS_PASSWORD }}
+      YASHANDB_IMAGE: docker.io/yasdb/yashandb:23.4.7.100
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify database password
+        shell: bash
+        run: |
+          if [ -z "$YASDB_PASSWORD" ]; then
+            echo "YASHANDB_SYS_PASSWORD is not configured"
+            exit 1
+          fi
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: linux-integration-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache YashanDB C client
+        id: cache-client
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/yashandb-client
+          key: yashandb-client-23.4.7.100-linux-x86_64-v2
+
+      - name: Download and extract YashanDB C client
+        if: steps.cache-client.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="23.4.7.100"
+          archive="yashandb-client-${version}-linux-x86_64.tar.gz"
+          url="https://github.com/yashan-technologies/yashandb-client/releases/download/${version}/${archive}"
+
+          client_root="${RUNNER_TEMP}/yashandb-client"
+          rm -rf "$client_root"
+          mkdir -p "$client_root"
+          curl --fail --location --retry 3 --silent --show-error \
+            --output "${RUNNER_TEMP}/${archive}" "$url"
+          ls -lh "${RUNNER_TEMP}/${archive}"
+
+          printf '%s  %s\n' \
+            "403ff0852712a7cfbaeb70269e4acf2391960dddcc374bee4227e68c4680d95f" \
+            "${RUNNER_TEMP}/${archive}" | sha256sum --check
+
+          tar -xzf "${RUNNER_TEMP}/${archive}" -C "$client_root"
+          echo "Client files after extraction:"
+          find "$client_root" -maxdepth 4 -type f -print | sort
+
+      - name: Configure YashanDB C client
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          client_root="${RUNNER_TEMP}/yashandb-client"
+          echo "Client files before configuration:"
+          ls -la "$client_root"
+          # libyascli.so may be a symlink to a versioned shared library.
+          lib="$(find "$client_root" -name libyascli.so -print -quit || true)"
+          if [ -z "$lib" ]; then
+            echo "libyascli.so not found; available shared libraries:"
+            find "$client_root" -type f -name '*.so' -print || true
+            exit 1
+          fi
+          client_home="$(dirname "$lib")"
+
+          echo "YASCLI_HOME=$client_home" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$client_home${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+
+      - name: Cache YashanDB Docker image
+        id: cache-image
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/yashandb-docker
+          key: yashandb-docker-23.4.7.100-linux-amd64
+
+      - name: Load or download YashanDB Docker image
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          image_cache_root="${RUNNER_TEMP}/yashandb-docker"
+          image_archive="$image_cache_root/yashandb.tar.gz"
+          mkdir -p "$image_cache_root"
+
+          if [ -s "$image_archive" ] && docker load --input "$image_archive"; then
+            echo "Loaded YashanDB image from Actions cache"
+          else
+            rm -f "$image_archive"
+            docker pull "$YASHANDB_IMAGE"
+            docker save "$YASHANDB_IMAGE" | gzip -1 > "$image_archive"
+            test -s "$image_archive"
+          fi
+
+      - name: Start YashanDB
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          db_root="${RUNNER_TEMP}/yashandb"
+          mkdir -p "$db_root/data" "$db_root/yasboot"
+          docker rm -f yashandb 2>/dev/null || true
+
+          docker run -d \
+            --name yashandb \
+            --publish 1688:1688 \
+            --volume "$db_root/data:/data/yashan" \
+            --volume "$db_root/yasboot:/home/yashan" \
+            --env "SYS_PASSWD=$YASDB_PASSWORD" \
+            --env TZ=UTC \
+            "$YASHANDB_IMAGE"
+
+      - name: Wait for YashanDB
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for i in $(seq 1 120); do
+            if ! docker inspect --format '{{.State.Running}}' yashandb 2>/dev/null | grep -q true; then
+              echo "YashanDB container exited unexpectedly"
+              docker logs yashandb || true
+              exit 1
+            fi
+
+            if docker logs yashandb 2>&1 | grep -q "task completed, status: SUCCESS"; then
+              if docker exec -e "SYS_PASSWD=$YASDB_PASSWORD" yashandb bash -l -c \
+                'printf "select status from v\$instance;\n" | yasql "sys/${SYS_PASSWD}@127.0.0.1:1688" | grep -q OPEN'; then
+                echo "YashanDB is ready"
+                exit 0
+              fi
+            fi
+
+            echo "Waiting for YashanDB initialization: ${i}/120"
+            sleep 5
+          done
+
+          echo "YashanDB did not become ready within 600 seconds"
+          docker logs yashandb || true
+          exit 1
+
+      - name: Verify integration environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "$YASCLI_HOME/libyascli.so"
+          test -n "$YASDB_URL"
+          test -n "$YASDB_USER"
+          test -n "$YASDB_PASSWORD"
+
+      - name: Run Rust integration tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          log_file="${RUNNER_TEMP}/rust-integration-tests.log"
+          cargo test --tests -- --test-threads=1 --nocapture 2>&1 | tee "$log_file"
+          if grep -q "skipping:" "$log_file"; then
+            echo "Integration tests were skipped"
+            exit 1
+          fi
+
+      - name: Dump YashanDB logs
+        if: failure()
+        shell: bash
+        run: docker logs yashandb || true
+
+      - name: Cleanup YashanDB
+        if: always()
+        shell: bash
+        run: docker rm -f yashandb || true
